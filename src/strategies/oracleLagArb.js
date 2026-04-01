@@ -281,20 +281,22 @@ class OracleLagArb extends EventEmitter {
       else if (pctWindow < -0.5) { targetDirection = 'DOWN'; targetToken = downToken; }
       else return;
 
+      console.log(`[OracleLag] Threshold met: ${symbol} ${pctWindow > 0 ? '+' : ''}${pctWindow.toFixed(3)}% → checking velocity+CLOB`);
+
       // ── Step 2: Velocity filter ───────────────────────────────────────────────
       // The move must be RECENT (happening in the current 1-minute candle), not a slow
       // 4-minute drift. Slow drifts give CLOB market makers time to reprice — no lag.
-      // Fast moves (0.2%+ in the current minute) = CLOB most likely still lagging.
+      // Fast moves (0.1%+ in the current minute) = CLOB most likely still lagging.
       const velocity = await this._get1mVelocity(symbol);
       const sameDir  = (pctWindow > 0 && velocity > 0) || (pctWindow < 0 && velocity < 0);
-      if (!sameDir || Math.abs(velocity) < 0.15) {
-        // Move is stale (reversed or spread over many minutes) — CLOB already repriced
+      if (!sameDir || Math.abs(velocity) < 0.10) {
+        console.log(`[OracleLag] Velocity filter blocked: ${symbol} vel=${velocity > 0 ? '+' : ''}${velocity.toFixed(3)}% sameDir=${sameDir}`);
         return;
       }
 
       // ── Step 3: Real-time CLOB price ──────────────────────────────────────────
       const clobPrice = await this._getClobPrice(targetToken.token_id);
-      if (!clobPrice) return;
+      if (!clobPrice) { console.log(`[OracleLag] CLOB price fetch failed for ${targetToken.token_id}`); return; }
 
       // ── Step 4: Edge check with fee-adjusted break-even ───────────────────────
       // Expected win probability (rough, based on historical 5m BTC/ETH crypto moves):
@@ -306,7 +308,8 @@ class OracleLagArb extends EventEmitter {
         (Math.abs(pctWindow) > 2.0) ? 0.73 :
         (Math.abs(pctWindow) > 1.0) ? 0.64 : 0.56;
 
-      if (clobPrice >= maxClobPrice) return; // AMM already repriced past break-even
+      console.log(`[OracleLag] CLOB check: ${symbol} ${targetDirection} clobBid=${clobPrice.toFixed(3)} max=${maxClobPrice} vel=${velocity.toFixed(3)}%`);
+      if (clobPrice >= maxClobPrice) { console.log(`[OracleLag] CLOB too high — already repriced`); return; } // AMM already repriced past break-even
 
       const msLeft = market._endsAtMs - now;
       if (msLeft < 30000) return; // No time to fill and resolve
