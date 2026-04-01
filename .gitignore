@@ -1,0 +1,16 @@
+# Never commit secrets or keys
+.env
+*.key
+*.pem
+
+# Dependencies
+node_modules/
+
+# Logs
+bot_log.txt
+*.log
+logs/
+
+# OS
+.DS_Store
+Thumbs.db
