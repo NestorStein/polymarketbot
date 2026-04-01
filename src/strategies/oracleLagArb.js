@@ -74,8 +74,13 @@ class OracleLagArb extends EventEmitter {
         if (data?.current) this.windowOpenPrices.set(symbol, data.current);
       }
       console.log('[OracleLag] Window reset — new reference prices set for all symbols');
-      // Also refresh markets immediately for the new window
+      // Refresh markets aggressively for first 60s of new window (new markets may lag Gamma API)
       this._refreshCryptoMarkets().catch(() => {});
+      let rapid = 0;
+      const rapidId = setInterval(() => {
+        if (!this.running || ++rapid >= 11) { clearInterval(rapidId); return; }
+        this._refreshCryptoMarkets().catch(() => {});
+      }, 6000);
     };
     setTimeout(() => {
       doReset();
