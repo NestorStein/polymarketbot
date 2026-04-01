@@ -215,7 +215,7 @@ class PolymarketClient {
     // Pass negRisk explicitly so order is signed against the correct exchange contract
     const marketInfo = { tickSize, negRisk: !!negRisk };
 
-    const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, OrderType.GTC);
+    const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, OrderType.FOK);
     return resp;
   }
 
