@@ -205,6 +205,13 @@ class Dashboard extends EventEmitter {
     this._broadcast();
   }
 
+  oracleScanTick(data) {
+    // data: { symbol, path, pctWindow, spike60, clobPrice, maxClobPrice, direction, status }
+    this.state.oracleScan = this.state.oracleScan || {};
+    this.state.oracleScan[data.symbol] = { ...data, ts: Date.now() };
+    this.io.emit('oracle_scan', data);
+  }
+
   cryptoPriceUpdate(prices) {
     this.state.cryptoPrices = prices;
     this.io.emit('prices', prices);

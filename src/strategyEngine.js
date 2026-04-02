@@ -75,6 +75,9 @@ class StrategyEngine {
       this.tradesExecuted++;
       this.dashboard?.tradeExecuted(trade);
     });
+    this.oracleLag.on('scan_tick', data => {
+      this.dashboard?.oracleScanTick(data);
+    });
     await this.oracleLag.start();
 
     if (!oracleLagOnly) {

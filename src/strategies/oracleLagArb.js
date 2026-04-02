@@ -453,6 +453,9 @@ class OracleLagArb extends EventEmitter {
 
       console.log(`[OracleLag] [${path}] ${symbol} window=${pctWindow>=0?'+':''}${pctWindow.toFixed(3)}% 60s=${spike60>=0?'+':''}${spike60.toFixed(3)}% | CLOB ${targetDirection}=${clobPrice.toFixed(3)} max=${maxClobPrice} age=${wsAge}${isReversal ? ` | stale=${reversalStaleSidePrice.toFixed(3)}` : ''}`);
 
+      const scanStatus = clobPrice >= maxClobPrice ? 'skip' : 'ready';
+      this.emit('scan_tick', { symbol, path, pctWindow, spike60, clobPrice, maxClobPrice, direction: targetDirection, status: scanStatus });
+
       if (clobPrice >= maxClobPrice) {
         console.log(`[OracleLag] CLOB at ${clobPrice.toFixed(3)} ≥ max ${maxClobPrice} — skip`);
         return;
