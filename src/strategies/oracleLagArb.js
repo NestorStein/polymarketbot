@@ -10,12 +10,12 @@
  *
  * Strategy:
  *  - Binance spot price moves BEFORE Polymarket order book reprices (~55s lag)
- *  - If BTC moved >0.3% in the current 5-min window, the "correct" direction
- *    token is underpriced — buy it before the market reprices
- *  - Example: BTC up 0.5% since window open → "Up" token still at 0.45 → buy Up
+ *  - Detect SUDDEN moves via rolling 30s/60s price history (not slow cumulative drifts)
+ *  - Two firing paths:
+ *    PATH A (spike-led): 60s spike ≥ 0.25% + window ≥ 0.30% → fire EARLY, CLOB < 0.55
+ *    PATH B (window-led): window ≥ 0.50% + 60s spike ≥ 0.15% → fire standard, CLOB < 0.56/0.64/0.73
  *
  * Fee note: these markets use crypto_fees_v2 with 7.2% taker rate.
- * Oracle lag edge is typically 30-50¢ per token — far exceeds the fee.
  */
 
 const WebSocket = require('ws');
@@ -38,16 +38,17 @@ class OracleLagArb extends EventEmitter {
     this.config = config;
     this.poly = polyClient;
     this.ws = null;
-    this.prices = {};        // symbol → { current, ts, change1m }
+    this.prices = {};        // symbol → { current, ts }
     this.markets = new Map(); // conditionId → market object
     this.running = false;
     this.maxTradesPerHour = 12;
-    this.maxConcurrentPositions = 4; // hold up to 4 positions at once
+    this.maxConcurrentPositions = 4;
     this.tradeTimestamps = [];
-    this.tradedMarkets = new Set(); // prevent double-trading same market
+    this.tradedMarkets = new Set();
     this.activePositions = 0;
-    this.committedUsdc = 0; // track locally to prevent concurrent over-spend
+    this.committedUsdc = 0;
     this.windowOpenPrices = new Map(); // symbol → price at start of current 5-min window
+    this.priceHistory = {};            // symbol → [{price, ts}] rolling 120s buffer
   }
 
   /** Start oracle lag monitor */
@@ -55,11 +56,9 @@ class OracleLagArb extends EventEmitter {
     this.running = true;
     await this._refreshCryptoMarkets();
     this._connectBinance();
-    // Refresh every 30s — new 5-min windows open constantly, need fresh token prices
     setInterval(() => this._refreshCryptoMarkets(), 30 * 1000);
-    // Reset window open prices on every 5-minute boundary so the reference aligns with market windows
     this._scheduleWindowReset();
-    console.log('[OracleLag] Started — watching BTC/ETH/SOL Up or Down markets');
+    console.log('[OracleLag] Started — watching BTC/ETH/SOL/XRP/DOGE/BNB Up or Down markets');
   }
 
   /** Schedule window price resets at each 5-minute market boundary */
@@ -69,12 +68,10 @@ class OracleLagArb extends EventEmitter {
     const doReset = () => {
       if (!this.running) return;
       this.windowOpenPrices.clear();
-      // Seed with current live prices immediately so we have a reference from window open
       for (const [symbol, data] of Object.entries(this.prices)) {
         if (data?.current) this.windowOpenPrices.set(symbol, data.current);
       }
       console.log('[OracleLag] Window reset — new reference prices set for all symbols');
-      // Refresh markets aggressively for first 60s of new window (new markets may lag Gamma API)
       this._refreshCryptoMarkets().catch(() => {});
       let rapid = 0;
       const rapidId = setInterval(() => {
@@ -109,21 +106,17 @@ class OracleLagArb extends EventEmitter {
 
         const symbol = ticker.s.replace('USDT', '');
         const price  = parseFloat(ticker.c);
-        const open   = parseFloat(ticker.o); // 24h open
 
-        this.prices[symbol] = {
-          current: price,
-          open24h: open,
-          change24h: ((price - open) / open) * 100,
-          ts: Date.now(),
-        };
+        this.prices[symbol] = { current: price, ts: Date.now() };
 
-        // Set window open price on first tick for this symbol (reset by _refreshCryptoMarkets)
+        // Maintain rolling 120s price history (used for spike detection)
+        this._pushPriceHistory(symbol, price);
+
+        // Set window open price on first tick for this symbol
         if (!this.windowOpenPrices.has(symbol)) {
           this.windowOpenPrices.set(symbol, price);
         }
 
-        // Check for oracle lag opportunity
         if (this.markets.size > 0) {
           await this._checkOpportunity(symbol, price);
         }
@@ -136,10 +129,48 @@ class OracleLagArb extends EventEmitter {
     });
   }
 
+  /** Push price into rolling history, trim entries older than 120s */
+  _pushPriceHistory(symbol, price) {
+    if (!this.priceHistory[symbol]) this.priceHistory[symbol] = [];
+    const now = Date.now();
+    this.priceHistory[symbol].push({ price, ts: now });
+    // Trim to last 120 seconds
+    const cutoff = now - 120_000;
+    const hist = this.priceHistory[symbol];
+    let i = 0;
+    while (i < hist.length - 1 && hist[i].ts < cutoff) i++;
+    if (i > 0) this.priceHistory[symbol] = hist.slice(i);
+  }
+
   /**
-   * Fetch active 5-min Up/Down markets via Gamma API slug pattern:
-   *   {asset}-updown-5m-{unix_timestamp_of_window_start}
-   * Checks current window + next 2 windows for each asset.
+   * Return the % price move over the last `secondsAgo` seconds.
+   * Synchronous — uses in-memory history, zero HTTP latency.
+   * Returns 0 if insufficient history.
+   */
+  _getRecentMove(symbol, secondsAgo) {
+    const hist = this.priceHistory[symbol];
+    if (!hist || hist.length < 2) return 0;
+    const now = Date.now();
+    const targetTs = now - secondsAgo * 1000;
+    // Find the most recent entry that is at least secondsAgo old
+    let oldEntry = null;
+    for (let i = hist.length - 1; i >= 0; i--) {
+      if (hist[i].ts <= targetTs) { oldEntry = hist[i]; break; }
+    }
+    if (!oldEntry) return 0; // not enough history yet
+    const current = hist[hist.length - 1];
+    return ((current.price - oldEntry.price) / oldEntry.price) * 100;
+  }
+
+  /** Seconds of price history available for a symbol */
+  _historyAge(symbol) {
+    const hist = this.priceHistory[symbol];
+    if (!hist || hist.length < 2) return 0;
+    return (hist[hist.length - 1].ts - hist[0].ts) / 1000;
+  }
+
+  /**
+   * Fetch active 5-min Up/Down markets via Gamma API slug pattern.
    */
   async _refreshCryptoMarkets() {
     const now = Date.now();
@@ -147,7 +178,6 @@ class OracleLagArb extends EventEmitter {
     const GAMMA = this.config.gammaHost || 'https://gamma-api.polymarket.com';
     let found = 0;
 
-    // Clear expired markets
     for (const [id, m] of this.markets) {
       if (m._endsAtMs && m._endsAtMs < now - 60000) {
         this.markets.delete(id);
@@ -155,42 +185,35 @@ class OracleLagArb extends EventEmitter {
       }
     }
 
-    // Current window start (rounded down to nearest 5 min)
     const windowStart = Math.floor(nowSec / 300) * 300;
     const windows = [windowStart - 300, windowStart, windowStart + 300, windowStart + 600];
 
     const fetches = [];
     for (const asset of Object.keys(ASSET_SYMBOL_MAP)) {
       for (const ts of windows) {
-        const slug = `${asset}-updown-5m-${ts}`;
-        fetches.push({ slug, asset, ts });
+        fetches.push({ slug: `${asset}-updown-5m-${ts}`, asset });
       }
     }
 
     await Promise.all(fetches.map(async ({ slug, asset }) => {
       try {
-        const res = await axios.get(`${GAMMA}/markets`, {
-          params: { slug },
-          timeout: 8000,
-        });
+        const res = await axios.get(`${GAMMA}/markets`, { params: { slug }, timeout: 8000 });
         const arr = res.data;
         const m = Array.isArray(arr) ? arr[0] : arr;
         if (!m || !m.active || m.closed || !m.acceptingOrders) return;
 
         const endsAtMs = m.endDate ? new Date(m.endDate).getTime() : null;
         if (!endsAtMs) return;
-        if (endsAtMs < now - 10000) return;            // already expired
-        if (endsAtMs > now + 48 * 60 * 60 * 1000) return; // too far out
+        if (endsAtMs < now - 10000) return;
+        if (endsAtMs > now + 48 * 60 * 60 * 1000) return;
 
         const conditionId = m.conditionId;
         if (this.markets.has(conditionId)) return;
 
-        // Parse token IDs
         let tokenIds = m.clobTokenIds;
         if (typeof tokenIds === 'string') { try { tokenIds = JSON.parse(tokenIds); } catch { return; } }
         if (!tokenIds || tokenIds.length < 2) return;
 
-        // Parse outcome prices
         let prices = m.outcomePrices;
         if (typeof prices === 'string') { try { prices = JSON.parse(prices); } catch { prices = ['0.5','0.5']; } }
 
@@ -205,7 +228,6 @@ class OracleLagArb extends EventEmitter {
         this.markets.set(conditionId, m);
         found++;
 
-        // Set window open price if we don't have one for this symbol yet
         if (!this.windowOpenPrices.has(symbol) && this.prices[symbol]) {
           this.windowOpenPrices.set(symbol, this.prices[symbol].current);
         }
@@ -213,25 +235,6 @@ class OracleLagArb extends EventEmitter {
     }));
 
     console.log(`[OracleLag] Tracking ${this.markets.size} active Up/Down markets (${found} new)`);
-  }
-
-  /** Check for oracle lag opportunity when a price tick arrives */
-  async _checkOpportunity(symbol, currentPrice) {
-    if (!this.running || !this._canTrade()) return;
-
-    // TIME GATE: only trade 12:00–22:00 UTC (high-volatility window).
-    // Outside these hours crypto is quiet and 7.2% fee destroys any marginal edge.
-    const utcHour = new Date().getUTCHours();
-    if (utcHour < 12 || utcHour >= 22) return;
-
-    const now = Date.now();
-    for (const [conditionId, market] of this.markets) {
-      if (this.activePositions >= this.maxConcurrentPositions) break;
-      if (market._symbol !== symbol) continue;
-      if (this.tradedMarkets.has(conditionId)) continue;
-      if (market._endsAtMs && market._endsAtMs < now) continue;
-      await this._evaluateMarket(market, symbol, currentPrice);
-    }
   }
 
   /** Fetch real-time CLOB buy-side bid for a token */
@@ -246,82 +249,96 @@ class OracleLagArb extends EventEmitter {
     } catch { return null; }
   }
 
-  /**
-   * Velocity check: fetch the current 1-minute Binance kline and return its % change.
-   * A strong 1m move in the SAME direction as the window move means the price action
-   * is RECENT and FAST — the CLOB is most likely to lag behind on fast moves.
-   */
-  async _get1mVelocity(symbol) {
-    try {
-      const res = await axios.get('https://api.binance.com/api/v3/klines', {
-        params: { symbol: symbol + 'USDT', interval: '1m', limit: 1 },
-        timeout: 2000,
-      });
-      const c = res.data[0];
-      return ((parseFloat(c[4]) - parseFloat(c[1])) / parseFloat(c[1])) * 100;
-    } catch { return 0; }
+  /** Check for oracle lag opportunity when a price tick arrives */
+  async _checkOpportunity(symbol, currentPrice) {
+    if (!this.running || !this._canTrade()) return;
+
+    // TIME GATE: 06:00–23:00 UTC covers Asian open, European session, and full US session.
+    const utcHour = new Date().getUTCHours();
+    if (utcHour < 6 || utcHour >= 23) return;
+
+    const now = Date.now();
+    for (const [conditionId, market] of this.markets) {
+      if (this.activePositions >= this.maxConcurrentPositions) break;
+      if (market._symbol !== symbol) continue;
+      if (this.tradedMarkets.has(conditionId)) continue;
+      if (market._endsAtMs && market._endsAtMs < now) continue;
+      await this._evaluateMarket(market, symbol, currentPrice);
+    }
   }
 
   /** Evaluate if a specific Up/Down market has an oracle lag opportunity */
   async _evaluateMarket(market, symbol, spotPrice) {
     try {
       const now = Date.now();
-
       if (market._startsAtMs && market._startsAtMs > now) return;
 
       const upToken   = market._upToken;
       const downToken = market._downToken;
 
+      // ── Window move (from 5-min boundary open) ────────────────────────────
       const windowOpen = this.windowOpenPrices.get(symbol) || spotPrice;
       const pctWindow  = ((spotPrice - windowOpen) / windowOpen) * 100;
 
-      // ── Step 1: Minimum move threshold ───────────────────────────────────────
-      // 0.3% tier removed: fee (7.2%) kills edge below 0.5% moves.
-      // Break-even analysis: 0.5% move → ~64% win prob → need CLOB < 0.597 to profit.
-      // 1.0% move → ~72% win prob → need CLOB < 0.672.
-      let targetDirection = null;
-      let targetToken = null;
+      // ── Recent spike detection (synchronous, zero HTTP cost) ───────────────
+      // Need at least 25s of history for spike60 to be meaningful
+      const histAge = this._historyAge(symbol);
+      const spike60 = histAge >= 25 ? this._getRecentMove(symbol, 60) : 0;
+      const spike30 = histAge >= 15 ? this._getRecentMove(symbol, 30) : 0;
 
-      if      (pctWindow >  0.5) { targetDirection = 'UP';   targetToken = upToken;   }
-      else if (pctWindow < -0.5) { targetDirection = 'DOWN'; targetToken = downToken; }
-      else return;
+      // Direction alignment: spike must agree with window move
+      const windowUp   = pctWindow > 0;
+      const spikeDir60 = (windowUp && spike60 > 0) || (!windowUp && spike60 < 0);
+      const spikeDir30 = (windowUp && spike30 > 0) || (!windowUp && spike30 < 0);
 
-      console.log(`[OracleLag] Threshold met: ${symbol} ${pctWindow > 0 ? '+' : ''}${pctWindow.toFixed(3)}% → checking velocity+CLOB`);
+      // ── PATH A: Spike-led signal ──────────────────────────────────────────
+      // 60s spike ≥ 0.25% + window confirms direction ≥ 0.30%
+      // Fire EARLY — CLOB almost certainly still at ~0.50
+      const isSpikeLed = Math.abs(spike60) >= 0.25
+                      && Math.abs(pctWindow) >= 0.30
+                      && spikeDir60;
 
-      // ── Step 2: Velocity filter ───────────────────────────────────────────────
-      // The move must be RECENT (happening in the current 1-minute candle), not a slow
-      // 4-minute drift. Slow drifts give CLOB market makers time to reprice — no lag.
-      // Fast moves (0.1%+ in the current minute) = CLOB most likely still lagging.
-      const velocity = await this._get1mVelocity(symbol);
-      const sameDir  = (pctWindow > 0 && velocity > 0) || (pctWindow < 0 && velocity < 0);
-      if (!sameDir || Math.abs(velocity) < 0.10) {
-        console.log(`[OracleLag] Velocity filter blocked: ${symbol} vel=${velocity > 0 ? '+' : ''}${velocity.toFixed(3)}% sameDir=${sameDir}`);
-        return;
-      }
+      // ── PATH B: Window-led signal ─────────────────────────────────────────
+      // Standard ≥ 0.50% window move PLUS must have recent momentum (not slow drift)
+      // Require 60s spike ≥ 0.15% to confirm move is still fresh
+      const isWindowLed = Math.abs(pctWindow) >= 0.50
+                       && Math.abs(spike60) >= 0.15
+                       && spikeDir60;
 
-      // ── Step 3: Real-time CLOB price ──────────────────────────────────────────
+      if (!isSpikeLed && !isWindowLed) return;
+
+      // Determine signal path and direction
+      const path = isSpikeLed && !isWindowLed ? 'SPIKE' : isWindowLed && !isSpikeLed ? 'WINDOW' : 'BOTH';
+      const targetDirection = pctWindow > 0 ? 'UP' : 'DOWN';
+      const targetToken     = pctWindow > 0 ? upToken : downToken;
+
+      console.log(`[OracleLag] SIGNAL [${path}]: ${symbol} window=${pctWindow > 0 ? '+' : ''}${pctWindow.toFixed(3)}% | 60s=${spike60 > 0 ? '+' : ''}${spike60.toFixed(3)}% | 30s=${spike30 > 0 ? '+' : ''}${spike30.toFixed(3)}% → checking CLOB`);
+
+      // ── CLOB price check ──────────────────────────────────────────────────
       const clobPrice = await this._getClobPrice(targetToken.token_id);
-      if (!clobPrice) { console.log(`[OracleLag] CLOB price fetch failed for ${targetToken.token_id}`); return; }
+      if (!clobPrice) { console.log(`[OracleLag] CLOB fetch failed`); return; }
 
-      // ── Step 4: Edge check with fee-adjusted break-even ───────────────────────
-      // Expected win probability (rough, based on historical 5m BTC/ETH crypto moves):
-      //   0.5-1.0% window move → ~64% win prob (break-even buy price: 0.597 after 7.2% fee)
-      //   >1.0%   window move → ~72% win prob (break-even: 0.672)
-      //   >2.0%   window move → ~82% win prob (break-even: 0.765)
-      // Max CLOB bid price = break-even minus 3¢ safety margin
-      const maxClobPrice =
+      // Max CLOB thresholds by signal strength:
+      //   SPIKE-led only (lower window move): conservative max 0.55
+      //   Window ≥ 0.5–1.0%: 0.56
+      //   Window ≥ 1.0–2.0%: 0.64
+      //   Window ≥ 2.0%:     0.73
+      const maxClobPrice = (isSpikeLed && !isWindowLed) ? 0.55 :
         (Math.abs(pctWindow) > 2.0) ? 0.73 :
         (Math.abs(pctWindow) > 1.0) ? 0.64 : 0.56;
 
-      console.log(`[OracleLag] CLOB check: ${symbol} ${targetDirection} clobBid=${clobPrice.toFixed(3)} max=${maxClobPrice} vel=${velocity.toFixed(3)}%`);
-      if (clobPrice >= maxClobPrice) { console.log(`[OracleLag] CLOB too high — already repriced`); return; } // AMM already repriced past break-even
+      console.log(`[OracleLag] CLOB check: ${symbol} ${targetDirection} bid=${clobPrice.toFixed(3)} max=${maxClobPrice}`);
+      if (clobPrice >= maxClobPrice) {
+        console.log(`[OracleLag] CLOB already repriced (${clobPrice.toFixed(3)} ≥ ${maxClobPrice}) — skip`);
+        return;
+      }
 
       const msLeft = market._endsAtMs - now;
-      if (msLeft < 30000) return; // No time to fill and resolve
-      const question = market.question?.slice(0, 65);
+      if (msLeft < 30000) return;
 
-      console.log(`[OracleLag] OPPORTUNITY: ${question}`);
-      console.log(`            ${symbol} ${pctWindow > 0 ? '+' : ''}${pctWindow.toFixed(3)}% window | 1m vel=${velocity > 0 ? '+' : ''}${velocity.toFixed(3)}% | BUY ${targetDirection} | CLOB=${clobPrice.toFixed(3)} (max=${maxClobPrice}) | ${(msLeft/1000).toFixed(0)}s left`);
+      const question = market.question?.slice(0, 65);
+      console.log(`[OracleLag] OPPORTUNITY [${path}]: ${question}`);
+      console.log(`            ${symbol} window=${pctWindow > 0 ? '+' : ''}${pctWindow.toFixed(3)}% | 60s=${spike60 > 0 ? '+' : ''}${spike60.toFixed(3)}% | 30s=${spike30 > 0 ? '+' : ''}${spike30.toFixed(3)}% | BUY ${targetDirection} @ CLOB=${clobPrice.toFixed(3)} (max=${maxClobPrice}) | ${(msLeft/1000).toFixed(0)}s left`);
 
       this.emit('opportunity', {
         type: 'ORACLE_LAG',
@@ -331,7 +348,9 @@ class OracleLagArb extends EventEmitter {
         spotPrice,
         windowOpen,
         pctMove: pctWindow,
-        velocity,
+        spike60,
+        spike30,
+        path,
         direction: targetDirection,
         tokenId: targetToken.token_id,
         side: targetDirection,
@@ -350,12 +369,6 @@ class OracleLagArb extends EventEmitter {
 
   /**
    * Execute an oracle lag trade.
-   * @param {object} market
-   * @param {string} tokenId
-   * @param {number} price       - real-time CLOB bid (fetched just before)
-   * @param {string} direction   - 'UP' | 'DOWN'
-   * @param {string} question
-   * @param {number} pctWindow   - Binance window % move (used for Kelly-style sizing)
    */
   async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5) {
     const balance = await this.poly.getBalance().catch(() => 0);
@@ -367,24 +380,21 @@ class OracleLagArb extends EventEmitter {
       return;
     }
 
-    // Signal-strength sizing: bet more on high-conviction signals.
-    //   0.5-1.0% move → 20% of available (conservative, lower edge)
-    //   1.0-2.0% move → 30% of available (moderate edge)
-    //   >2.0%   move → 40% of available (strong edge, rare)
-    // Always capped at maxPositionUsdc.
+    // Signal-strength sizing:
+    //   spike-led (0.30-0.50% window): 15% — smaller bet, lower win probability
+    //   0.50-1.0% window: 20%
+    //   1.0-2.0% window: 30%
+    //   >2.0% window:    40%
     const pct = Math.abs(pctWindow);
-    const fraction = pct >= 2.0 ? 0.40 : pct >= 1.0 ? 0.30 : 0.20;
+    const fraction = pct >= 2.0 ? 0.40 : pct >= 1.0 ? 0.30 : pct >= 0.50 ? 0.20 : 0.15;
     const size = Math.min(this.config.maxPositionUsdc, available * fraction);
     if (size < 5) return;
 
     this.committedUsdc += size;
     this.activePositions++;
     try {
-      // Bid at CLOB price + 0.02 to cross the 0.01 spread and give a 0.01 buffer.
-      // FOK fills at the ASK (CLOB bid + 0.01) immediately, or cancels entirely.
-      // Cap at 0.76 — above this the fee (7.2%) erodes returns below acceptable.
       const fillPrice = Math.min(parseFloat((price + 0.02).toFixed(2)), 0.76);
-      console.log(`[OracleLag] Executing FOK: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (CLOB=${price.toFixed(3)}+0.02) | signal=${pct.toFixed(2)}%`);
+      console.log(`[OracleLag] Executing FOK: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (CLOB=${price.toFixed(3)}+0.02) | signal=${pct.toFixed(3)}%`);
       const order = await this.poly.placeBuyOrder(tokenId, fillPrice, size, 0.01, false);
       this._recordTrade();
       const orderId = order?.orderID || order?.errorMsg || JSON.stringify(order)?.slice(0, 60);
@@ -401,7 +411,7 @@ class OracleLagArb extends EventEmitter {
         orderId: order?.orderID,
         ts: Date.now(),
       });
-      // Decrement counters when market resolves
+
       if (market._endsAtMs) {
         const msLeft = market._endsAtMs - Date.now();
         const cleanup = () => { this.activePositions--; this.committedUsdc = Math.max(0, this.committedUsdc - size); };
@@ -413,14 +423,13 @@ class OracleLagArb extends EventEmitter {
       console.error('[OracleLag] Trade failed:', msg.slice(0, 120));
       this.committedUsdc = Math.max(0, this.committedUsdc - size);
       this.activePositions--;
-      // Un-mark so we can retry on transient errors (but not balance errors)
       if (!msg.includes('balance') && !msg.includes('allowance')) {
         this.tradedMarkets.delete(market.condition_id);
       }
     }
   }
 
-  /** Rate limit guard: max 10 trades/hour */
+  /** Rate limit guard */
   _canTrade() {
     const now = Date.now();
     this.tradeTimestamps = this.tradeTimestamps.filter(t => now - t < 3600000);
