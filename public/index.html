@@ -234,6 +234,9 @@
     .sc-window { font-size: 16px; font-weight: 700; font-variant-numeric: tabular-nums; }
     .sc-clob { font-size: 11px; color: var(--muted2); font-variant-numeric: tabular-nums; }
     .sc-badge { display: inline-block; font-size: 9px; font-weight: 700; padding: 2px 6px; border-radius: 3px; letter-spacing: 0.5px; margin-top: 2px; }
+    .sc-link { display: block; font-size: 9px; color: var(--muted); text-decoration: none; margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .sc-link:hover { color: var(--blue); text-decoration: underline; }
+    .sc-link:empty { display: none; }
     .sc-idle  { background: rgba(255,255,255,0.05); color: var(--muted); }
     .sc-skip  { background: rgba(255,80,80,0.15);   color: var(--red); }
     .sc-ready { background: rgba(0,255,140,0.2);    color: var(--green); animation: pulse 0.6s ease-in-out infinite alternate; }
@@ -400,12 +403,12 @@
       <span class="panel-badge" id="scan-status">Waiting...</span>
     </div>
     <div id="scan-grid" style="display:grid;grid-template-columns:repeat(6,1fr);gap:1px;background:var(--border)">
-      <div class="scan-cell" id="sc-BTC" data-sym="BTC"><div class="sc-sym">BTC</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
-      <div class="scan-cell" id="sc-ETH" data-sym="ETH"><div class="sc-sym">ETH</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
-      <div class="scan-cell" id="sc-SOL" data-sym="SOL"><div class="sc-sym">SOL</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
-      <div class="scan-cell" id="sc-XRP" data-sym="XRP"><div class="sc-sym">XRP</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
-      <div class="scan-cell" id="sc-BNB" data-sym="BNB"><div class="sc-sym">BNB</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
-      <div class="scan-cell" id="sc-DOGE" data-sym="DOGE"><div class="sc-sym">DOGE</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div></div>
+      <div class="scan-cell" id="sc-BTC"  data-sym="BTC" ><div class="sc-sym">BTC</div> <div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
+      <div class="scan-cell" id="sc-ETH"  data-sym="ETH" ><div class="sc-sym">ETH</div> <div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
+      <div class="scan-cell" id="sc-SOL"  data-sym="SOL" ><div class="sc-sym">SOL</div> <div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
+      <div class="scan-cell" id="sc-XRP"  data-sym="XRP" ><div class="sc-sym">XRP</div> <div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
+      <div class="scan-cell" id="sc-BNB"  data-sym="BNB" ><div class="sc-sym">BNB</div> <div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
+      <div class="scan-cell" id="sc-DOGE" data-sym="DOGE"><div class="sc-sym">DOGE</div><div class="sc-path">—</div><div class="sc-window">—</div><div class="sc-clob">—</div><div class="sc-badge sc-idle">IDLE</div><a class="sc-link" href="#" target="_blank"></a></div>
     </div>
   </div>
 
@@ -549,7 +552,7 @@ function updateScanCell(d) {
   if (!cell) return;
   document.getElementById('scan-status').textContent = 'Live';
 
-  const [symEl, pathEl, windowEl, clobEl, badgeEl] = cell.children;
+  const [symEl, pathEl, windowEl, clobEl, badgeEl, linkEl] = cell.children;
   const sign = d.pctWindow >= 0 ? '+' : '';
   windowEl.textContent = sign + d.pctWindow.toFixed(3) + '%';
   windowEl.className = 'sc-window ' + (Math.abs(d.pctWindow) < 0.10 ? 'flat' : d.pctWindow > 0 ? 'up' : 'down');
@@ -559,6 +562,11 @@ function updateScanCell(d) {
 
   badgeEl.className = 'sc-badge sc-' + d.status;
   badgeEl.textContent = d.status === 'ready' ? '🔥 FIRE' : 'SKIP ' + d.clobPrice.toFixed(2);
+
+  if (linkEl && d.marketUrl) {
+    linkEl.href = d.marketUrl;
+    linkEl.textContent = d.marketSlug || d.marketUrl;
+  }
 
   // Flash the cell border on signal
   cell.style.outline = d.status === 'ready' ? '2px solid var(--green)' : '1px solid rgba(255,80,80,0.3)';
