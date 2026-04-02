@@ -516,8 +516,11 @@ class OracleLagArb extends EventEmitter {
       console.log(`[OracleLag] Executing FOK: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (bid=${price.toFixed(3)}+0.02)`);
       const order = await this.poly.placeBuyOrder(tokenId, fillPrice, size, 0.01, false);
       this._recordTrade();
-      const orderId = order?.orderID || order?.errorMsg || JSON.stringify(order)?.slice(0, 60);
+      const orderId = order?.orderID || order?.errorMsg || JSON.stringify(order)?.slice(0, 200);
       console.log(`[OracleLag] Order placed: ${orderId}`);
+      if (order?.error || (!order?.orderID && !order?.status)) {
+        console.warn(`[OracleLag] Order may have failed — no orderID in response`);
+      }
 
       this.emit('trade_executed', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,

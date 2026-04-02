@@ -210,7 +210,7 @@ class PolymarketClient {
   async placeBuyOrder(tokenId, price, sizeUsdc, tickSize = 0.01, negRisk = false) {
     if (!this.ready) throw new Error('Client not initialized');
 
-    const size = Math.floor((sizeUsdc / price) * 100) / 100; // shares to buy
+    const size = Math.floor(sizeUsdc / price); // shares to buy — must be whole number for FOK
     const orderArgs = { tokenID: tokenId, price, side: Side.BUY, size };
     // Pass negRisk explicitly so order is signed against the correct exchange contract
     const marketInfo = { tickSize, negRisk: !!negRisk };
