@@ -534,8 +534,10 @@ class OracleLagArb extends EventEmitter {
       }
 
       this._recordTrade();
+      const slug = market.slug || '';
       this.emit('trade_executed', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
+        slug, marketUrl: slug ? `https://polymarket.com/event/${slug}` : '',
         tokenId, side: direction, price, size, orderId: order.orderID, ts: Date.now(),
       });
 

@@ -473,6 +473,20 @@
     </div>
   </div>
 
+  <!-- ROW: Bet History -->
+  <div class="panel full-width" style="margin-top:12px">
+    <div class="panel-header">
+      <div class="panel-title"><span class="icon">📋</span> Bet History</div>
+      <span class="panel-badge" id="bet-log-count">0</span>
+    </div>
+    <div class="scroll-y" style="max-height:240px">
+      <table class="data-table">
+        <thead><tr><th>Time</th><th>Market</th><th>Side</th><th>Price</th><th>Size</th><th>Order</th></tr></thead>
+        <tbody id="bet-log-table"><tr class="empty-row"><td colspan="6">No bets yet</td></tr></tbody>
+      </table>
+    </div>
+  </div>
+
   <!-- ROW: Arb Opportunities + hidden positions-table stub for state compat -->
   <div class="content-grid">
     <div style="display:none"><tbody id="positions-table"></tbody><span id="positions-count"></span></div>
@@ -544,7 +558,7 @@ socket.on('log',         appendLog);
 socket.on('prices',      updatePrices);
 socket.on('signal',      addSignal);
 socket.on('arb_found',   addArb);
-socket.on('trade',       addTrade);
+socket.on('trade',       t => { addTrade(t); fetchPositions(); });
 socket.on('oracle_scan', updateScanCell);
 
 function updateScanCell(d) {
@@ -627,6 +641,7 @@ function applyState(s) {
 
   // Positions table
   renderPositions(s.positions || []);
+  renderBetLog(s.betLog || []);
 
   // Trades
   if (s.recentTrades && s.recentTrades.length) {
@@ -875,6 +890,39 @@ async function fetchPositions() {
   }
 }
 
+function renderBetLog(bets) {
+  const tbody   = document.getElementById('bet-log-table');
+  const countEl = document.getElementById('bet-log-count');
+  if (!bets.length) {
+    tbody.innerHTML = '<tr class="empty-row"><td colspan="6">No bets yet</td></tr>';
+    countEl.textContent = '0';
+    return;
+  }
+  countEl.textContent = bets.length;
+  tbody.innerHTML = bets.map(b => {
+    const side    = (b.side || '').toUpperCase();
+    const sideCls = side === 'UP' ? 'side-yes' : 'side-no';
+    const price   = parseFloat(b.price);
+    const size    = parseFloat(b.size);
+    const market  = escHtml((b.market || '—').slice(0, 55));
+    // Build Polymarket URL from marketId (conditionId) — use gamma API slug if available
+    // We store marketId as conditionId; slug is not directly available here, so link to search
+    const orderId = b.orderId ? escHtml(b.orderId.slice(0, 16) + '…') : '—';
+    const orderUrl = b.orderId ? `https://polygonscan.com/tx/${b.orderId}` : '#';
+    const mktLink  = b.marketUrl
+      ? `<a href="${escHtml(b.marketUrl)}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed var(--muted)" onmouseover="this.style.color='var(--blue)'" onmouseout="this.style.color='inherit'">${market} ↗</a>`
+      : market;
+    return `<tr>
+      <td class="mono" style="font-size:11px;color:var(--muted)">${b.time || '—'}</td>
+      <td class="td-market">${mktLink}</td>
+      <td><span class="${sideCls}">${side}</span></td>
+      <td class="mono">${isNaN(price) ? '—' : (price*100).toFixed(0) + '¢'}</td>
+      <td class="mono">$${isNaN(size) ? '—' : size.toFixed(2)}</td>
+      <td class="mono" style="font-size:10px"><a href="${orderUrl}" target="_blank" style="color:var(--muted);text-decoration:none;" onmouseover="this.style.color='var(--blue)'" onmouseout="this.style.color='var(--muted)'">${orderId}</a></td>
+    </tr>`;
+  }).join('');
+}
+
 function renderBettedPositions(positions) {
   const tbody   = document.getElementById('betted-positions-table');
   const countEl = document.getElementById('betted-positions-count');
@@ -917,8 +965,13 @@ function renderBettedPositions(positions) {
     }
 
     const title = escHtml((p.title || p.market || '—').slice(0, 52));
+    const slug  = p.eventSlug || p.slug || '';
+    const mktUrl = slug ? `https://polymarket.com/event/${slug}` : '';
+    const titleHtml = mktUrl
+      ? `<a href="${mktUrl}" target="_blank" style="color:inherit;text-decoration:none;border-bottom:1px dashed var(--muted);cursor:pointer;" onmouseover="this.style.color='var(--blue)'" onmouseout="this.style.color='inherit'">${title} ↗</a>`
+      : title;
     return `<tr>
-      <td class="td-market" title="${title}">${title}</td>
+      <td class="td-market" title="${title}">${titleHtml}</td>
       <td><span class="${sideCls}">${escHtml(outcome)}</span></td>
       <td>$${cost.toFixed(2)}</td>
       <td class="mono">${(avgPrice * 100).toFixed(0)}¢</td>

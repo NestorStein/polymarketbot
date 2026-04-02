@@ -90,8 +90,17 @@ class Dashboard extends EventEmitter {
     const indexSet = outcomeIndex === 0 ? 1 : 2;
     const data = CTF_IFACE.encodeFunctionData('redeemPositions', [USDC_E, ZERO_B32, conditionId, [indexSet]]);
     const wallet = new ethers.Wallet(this.config.polygonPrivateKey);
-    const provider = new ethers.providers.JsonRpcProvider(POLY_RPCS[0]);
-    const nonce = await provider.getTransactionCount(wallet.address);
+
+    // Try each RPC until one returns the nonce successfully
+    let nonce;
+    for (const rpc of POLY_RPCS) {
+      try {
+        const provider = new ethers.providers.JsonRpcProvider(rpc);
+        nonce = await provider.getTransactionCount(wallet.address);
+        break;
+      } catch { /* try next */ }
+    }
+    if (nonce == null) throw new Error('All RPCs failed to get nonce');
     const tx = {
       to: CTF_ADDRESS,
       data,
@@ -200,6 +209,20 @@ class Dashboard extends EventEmitter {
 
   tradeExecuted(trade) {
     this.state.tradesExecuted++;
+    // Keep a persistent bet log (survives position redemption)
+    this.state.betLog = this.state.betLog || [];
+    this.state.betLog.unshift({
+      ts:        Date.now(),
+      time:      new Date().toLocaleTimeString(),
+      market:    trade.market,
+      marketId:  trade.marketId,
+      marketUrl: trade.marketUrl || '',
+      side:      trade.side,
+      price:     trade.price,
+      size:      trade.size,
+      orderId:   trade.orderId,
+    });
+    if (this.state.betLog.length > 50) this.state.betLog = this.state.betLog.slice(0, 50);
     this._log(`TRADE: ${trade.type} ${trade.side || ''} $${trade.size?.toFixed(2) || trade.sizePerSide?.toFixed(2)} | ${(trade.market || trade.market)?.slice(0, 40)}`, 'trade');
     this.io.emit('trade', trade);
     this._broadcast();
