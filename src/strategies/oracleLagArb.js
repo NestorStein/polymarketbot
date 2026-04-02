@@ -115,10 +115,11 @@ class OracleLagArb extends EventEmitter {
         for (const msg of arr) {
           // Initial orderbook snapshot — extract best bid/ask from bids[]/asks[]
           if (msg.bids && msg.asks && msg.asset_id) {
-            const bestBid = msg.bids.length > 0 ? parseFloat(msg.bids[0].price) : null;
-            const bestAsk = msg.asks.length > 0 ? parseFloat(msg.asks[msg.asks.length - 1]?.price) : null;
-            // asks are ordered low→high, so last element is highest ask, but we want lowest ask
-            const lowestAsk = msg.asks.length > 0 ? parseFloat(msg.asks[0].price) : null;
+            // Sort defensively: bids descending (highest = best bid), asks ascending (lowest = best ask)
+            const bidPrices = msg.bids.map(b => parseFloat(b.price)).filter(p => !isNaN(p));
+            const askPrices = msg.asks.map(a => parseFloat(a.price)).filter(p => !isNaN(p));
+            const bestBid  = bidPrices.length > 0 ? Math.max(...bidPrices) : null;
+            const lowestAsk = askPrices.length > 0 ? Math.min(...askPrices) : null;
             this.clobPrices[msg.asset_id] = { bid: bestBid, ask: lowestAsk, ts: Date.now() };
           }
           // Real-time price_changes — has best_bid and best_ask directly
@@ -166,7 +167,10 @@ class OracleLagArb extends EventEmitter {
    */
   async _getClobPrice(tokenId) {
     const cached = this.clobPrices[tokenId];
-    if (cached && cached.ask != null && (Date.now() - cached.ts) < 10_000) {
+    // Trust WS cache only if fresh AND not a suspiciously extreme value from a stale snapshot.
+    // ask ≥ 0.95 with no recent price_change event often means the WS book snapshot had
+    // a bad high limit order as asks[0] — verify via HTTP instead.
+    if (cached && cached.ask != null && cached.ask < 0.95 && (Date.now() - cached.ts) < 10_000) {
       return cached.ask;
     }
     // Fallback: HTTP (only if WS data is stale/missing)
@@ -373,8 +377,11 @@ class OracleLagArb extends EventEmitter {
       const spike30 = histAge >= 15 ? this._getRecentMove(symbol, 30) : 0;
 
       // ── Both CLOB prices from WS cache (0ms) ──────────────────────────────
-      const upClobAsk   = this.clobPrices[upToken.token_id]?.ask   ?? null;
-      const downClobAsk = this.clobPrices[downToken.token_id]?.ask ?? null;
+      // Reject ask ≥ 0.95: likely a stale high limit order from the WS snapshot, not real liquidity.
+      const _upRaw   = this.clobPrices[upToken.token_id]?.ask;
+      const _downRaw = this.clobPrices[downToken.token_id]?.ask;
+      const upClobAsk   = (_upRaw   != null && _upRaw   < 0.95) ? _upRaw   : null;
+      const downClobAsk = (_downRaw != null && _downRaw < 0.95) ? _downRaw : null;
 
       // ── PATH C: REVERSAL ───────────────────────────────────────────────────
       // CLOB committed strongly to one direction, but BTC has actually moved opposite.
