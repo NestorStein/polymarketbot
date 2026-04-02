@@ -514,19 +514,29 @@ class OracleLagArb extends EventEmitter {
     this.committedUsdc += size;
     this.activePositions++;
     try {
-      const fillPrice = Math.min(parseFloat((price + 0.02).toFixed(2)), 0.76);
-      console.log(`[OracleLag] Executing FOK: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (bid=${price.toFixed(3)}+0.02)`);
+      // Bid offset: reversal tokens are thin-book (0.10-0.30), need wider sweep to guarantee FOK fill.
+      // Spike/Window: +0.02 is fine (liquid markets). Reversal: +0.05.
+      const bidOffset = reversalStalePrice != null ? 0.05 : 0.02;
+      const fillPrice = Math.min(parseFloat((price + bidOffset).toFixed(2)), 0.76);
+      console.log(`[OracleLag] Executing FOK: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (bid=${price.toFixed(3)}+${bidOffset})`);
       const order = await this.poly.placeBuyOrder(tokenId, fillPrice, size, 0.01, false);
-      this._recordTrade();
       const orderId = order?.orderID || order?.errorMsg || JSON.stringify(order)?.slice(0, 200);
       console.log(`[OracleLag] Order placed: ${orderId}`);
-      if (order?.error || (!order?.orderID && !order?.status)) {
-        console.warn(`[OracleLag] Order may have failed — no orderID in response`);
+
+      // FOK "killed" — no fill, returned as 400 response (not thrown)
+      if (order?.error || !order?.orderID) {
+        const errMsg = order?.error || 'no orderID';
+        console.warn(`[OracleLag] FOK failed (${errMsg}) — releasing lock, market available for retry`);
+        this.committedUsdc = Math.max(0, this.committedUsdc - size);
+        this.activePositions--;
+        this.tradedMarkets.delete(market.condition_id);
+        return;
       }
 
+      this._recordTrade();
       this.emit('trade_executed', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
-        tokenId, side: direction, price, size, orderId: order?.orderID, ts: Date.now(),
+        tokenId, side: direction, price, size, orderId: order.orderID, ts: Date.now(),
       });
 
       if (market._endsAtMs) {
