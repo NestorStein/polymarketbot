@@ -374,20 +374,55 @@ class OracleLagArb extends EventEmitter {
       const spike60 = histAge >= 25 ? this._getRecentMove(symbol, 60) : 0;
       const spike30 = histAge >= 15 ? this._getRecentMove(symbol, 30) : 0;
 
-      const spikeDir60 = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
+      // ── Both CLOB prices from WS cache (0ms) ──────────────────────────────
+      const upClobAsk   = this.clobPrices[upToken.token_id]?.ask   ?? null;
+      const downClobAsk = this.clobPrices[downToken.token_id]?.ask ?? null;
 
-      // PATH A — spike-led: sudden 60s move ≥ 0.25% + window confirms ≥ 0.30%
+      // ── PATH C: REVERSAL ───────────────────────────────────────────────────
+      // CLOB committed strongly to one direction, but BTC has actually moved opposite.
+      // e.g. CLOB shows UP=0.80 (BTC was up early), but BTC is now -0.25% from window open.
+      // → Buy DOWN cheap (0.20 ask) before AMM catches the reversal.
+      // Conviction threshold: stale side > 0.65, disagreement ≥ 0.20%.
+      let isReversal = false;
+      let reversalStaleSidePrice = 0;
+      let reversalDirection = null;
+
+      if (upClobAsk != null && downClobAsk != null) {
+        if (upClobAsk > 0.65 && pctWindow < -0.20) {
+          // CLOB says UP wins, but BTC is DOWN — buy DOWN
+          isReversal = true;
+          reversalDirection = 'DOWN';
+          reversalStaleSidePrice = upClobAsk;
+        } else if (downClobAsk > 0.65 && pctWindow > 0.20) {
+          // CLOB says DOWN wins, but BTC is UP — buy UP
+          isReversal = true;
+          reversalDirection = 'UP';
+          reversalStaleSidePrice = downClobAsk;
+        }
+      }
+
+      // ── PATH A / B: spike-led and window-led (follow BTC direction) ────────
+      const spikeDir60  = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
       const isSpikeLed  = Math.abs(spike60) >= 0.25 && Math.abs(pctWindow) >= 0.30 && spikeDir60;
-      // PATH B — window-led: large window move ≥ 0.50% + still fresh (60s ≥ 0.15%)
       const isWindowLed = Math.abs(pctWindow) >= 0.50 && Math.abs(spike60) >= 0.15 && spikeDir60;
 
-      if (!isSpikeLed && !isWindowLed) return;
+      if (!isReversal && !isSpikeLed && !isWindowLed) return;
 
-      const path = (isSpikeLed && isWindowLed) ? 'BOTH' : isSpikeLed ? 'SPIKE' : 'WINDOW';
-      const targetDirection = pctWindow > 0 ? 'UP' : 'DOWN';
-      const targetToken     = pctWindow > 0 ? upToken : downToken;
+      // ── Determine final direction & target token ───────────────────────────
+      // Reversal targets opposite of CLOB's committed side.
+      // A/B follow BTC direction. If reversal direction agrees with A/B: combined.
+      const btcDirection    = pctWindow > 0 ? 'UP' : 'DOWN';
+      const targetDirection = isReversal ? reversalDirection : btcDirection;
+      const targetToken     = targetDirection === 'UP' ? upToken : downToken;
 
-      // ── CLOB price — from WS cache (0ms), HTTP fallback if stale ──────────
+      // Build path label
+      const pathParts = [];
+      if (isReversal) pathParts.push('REVERSAL');
+      if (isSpikeLed  && btcDirection === targetDirection) pathParts.push('SPIKE');
+      if (isWindowLed && btcDirection === targetDirection) pathParts.push('WINDOW');
+      const path = pathParts.join('+') || 'REVERSAL';
+
+      // ── CLOB price for target token (0ms from cache) ──────────────────────
       const clobPrice = await this._getClobPrice(targetToken.token_id);
       if (!clobPrice) { console.log(`[OracleLag] CLOB price unavailable for ${symbol} ${targetDirection}`); return; }
 
@@ -395,15 +430,22 @@ class OracleLagArb extends EventEmitter {
         ? `${((Date.now() - this.clobPrices[targetToken.token_id].ts) / 1000).toFixed(1)}s ago`
         : 'HTTP';
 
-      // ── Edge check ────────────────────────────────────────────────────────
-      const maxClobPrice = (isSpikeLed && !isWindowLed) ? 0.55 :
-        (Math.abs(pctWindow) > 2.0) ? 0.73 :
-        (Math.abs(pctWindow) > 1.0) ? 0.64 : 0.56;
+      // ── Max CLOB thresholds ────────────────────────────────────────────────
+      // Reversal: we're buying the cheap/wrong-priced token.
+      //   Stale side > 0.80: target cheap token likely 0.15-0.25 → allow up to 0.50
+      //   Stale side > 0.70: target likely 0.25-0.35 → allow up to 0.45
+      //   Stale side > 0.65: target likely 0.30-0.40 → allow up to 0.40
+      // Spike/Window: existing tiers.
+      const maxClobPrice = isReversal
+        ? (reversalStaleSidePrice > 0.80 ? 0.50 : reversalStaleSidePrice > 0.70 ? 0.45 : 0.40)
+        : (isSpikeLed && !isWindowLed) ? 0.55
+        : (Math.abs(pctWindow) > 2.0) ? 0.73
+        : (Math.abs(pctWindow) > 1.0) ? 0.64 : 0.56;
 
-      console.log(`[OracleLag] [${path}] ${symbol} window=${pctWindow>=0?'+':''}${pctWindow.toFixed(3)}% 60s=${spike60>=0?'+':''}${spike60.toFixed(3)}% 30s=${spike30>=0?'+':''}${spike30.toFixed(3)}% | CLOB ${targetDirection}=${clobPrice.toFixed(3)} (max=${maxClobPrice}, age=${wsAge})`);
+      console.log(`[OracleLag] [${path}] ${symbol} window=${pctWindow>=0?'+':''}${pctWindow.toFixed(3)}% 60s=${spike60>=0?'+':''}${spike60.toFixed(3)}% | CLOB ${targetDirection}=${clobPrice.toFixed(3)} max=${maxClobPrice} age=${wsAge}${isReversal ? ` | stale=${reversalStaleSidePrice.toFixed(3)}` : ''}`);
 
       if (clobPrice >= maxClobPrice) {
-        console.log(`[OracleLag] CLOB already repriced — skip`);
+        console.log(`[OracleLag] CLOB at ${clobPrice.toFixed(3)} ≥ max ${maxClobPrice} — skip`);
         return;
       }
 
@@ -411,8 +453,8 @@ class OracleLagArb extends EventEmitter {
       if (msLeft < 30000) return;
 
       const question = market.question?.slice(0, 65);
-      console.log(`[OracleLag] OPPORTUNITY [${path}]: ${question}`);
-      console.log(`            BUY ${targetDirection} | CLOB=${clobPrice.toFixed(3)} max=${maxClobPrice} | ${(msLeft/1000).toFixed(0)}s left`);
+      console.log(`[OracleLag] *** OPPORTUNITY [${path}]: ${question}`);
+      console.log(`            BUY ${targetDirection} @ ${clobPrice.toFixed(3)} (max=${maxClobPrice}) | ${(msLeft/1000).toFixed(0)}s left`);
 
       this.emit('opportunity', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
@@ -422,7 +464,7 @@ class OracleLagArb extends EventEmitter {
       });
 
       this.tradedMarkets.add(market.condition_id);
-      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow);
+      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null);
 
     } catch (err) {
       console.warn('[OracleLag] Evaluate error:', err.message);
@@ -433,7 +475,7 @@ class OracleLagArb extends EventEmitter {
   // Trade execution
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5) {
+  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5, reversalStalePrice = null) {
     const balance   = await this.poly.getBalance().catch(() => 0);
     const reserve   = this.config.reserveUsdc || 5;
     const available = balance - reserve - this.committedUsdc;
@@ -443,8 +485,15 @@ class OracleLagArb extends EventEmitter {
       return;
     }
 
+    // Reversal sizing: scale by how strongly the stale side was committed.
+    //   Stale > 0.80 → 25% (deep mismatch, high conviction)
+    //   Stale > 0.70 → 20%
+    //   Stale > 0.65 → 15%
+    // Spike/Window sizing: by window move magnitude.
     const pct      = Math.abs(pctWindow);
-    const fraction = pct >= 2.0 ? 0.40 : pct >= 1.0 ? 0.30 : pct >= 0.50 ? 0.20 : 0.15;
+    const fraction = reversalStalePrice != null
+      ? (reversalStalePrice > 0.80 ? 0.25 : reversalStalePrice > 0.70 ? 0.20 : 0.15)
+      : (pct >= 2.0 ? 0.40 : pct >= 1.0 ? 0.30 : pct >= 0.50 ? 0.20 : 0.15);
     const size     = Math.min(this.config.maxPositionUsdc, available * fraction);
     if (size < 5) return;
 
