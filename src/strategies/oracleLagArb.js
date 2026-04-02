@@ -343,10 +343,8 @@ class OracleLagArb extends EventEmitter {
   async _checkOpportunity(symbol, currentPrice) {
     if (!this.running || !this._canTrade()) return;
 
-    // TIME GATE: 06:00–23:00 UTC (Asian open through US close)
-    const utcHour = new Date().getUTCHours();
-    if (utcHour < 6 || utcHour >= 23) return;
-
+    // No time gate — signal filters (spike ≥0.25%, window ≥0.50%, reversal CLOB mismatch)
+    // are strong enough to prevent bad trades during quiet hours. Markets run 24/7.
     const now = Date.now();
     for (const [conditionId, market] of this.markets) {
       if (this.activePositions >= this.maxConcurrentPositions) break;
@@ -388,12 +386,12 @@ class OracleLagArb extends EventEmitter {
       let reversalDirection = null;
 
       if (upClobAsk != null && downClobAsk != null) {
-        if (upClobAsk > 0.65 && pctWindow < -0.20) {
+        if (upClobAsk > 0.60 && pctWindow < -0.15) {
           // CLOB says UP wins, but BTC is DOWN — buy DOWN
           isReversal = true;
           reversalDirection = 'DOWN';
           reversalStaleSidePrice = upClobAsk;
-        } else if (downClobAsk > 0.65 && pctWindow > 0.20) {
+        } else if (downClobAsk > 0.60 && pctWindow > 0.15) {
           // CLOB says DOWN wins, but BTC is UP — buy UP
           isReversal = true;
           reversalDirection = 'UP';
@@ -402,9 +400,12 @@ class OracleLagArb extends EventEmitter {
       }
 
       // ── PATH A / B: spike-led and window-led (follow BTC direction) ────────
-      const spikeDir60  = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
-      const isSpikeLed  = Math.abs(spike60) >= 0.25 && Math.abs(pctWindow) >= 0.30 && spikeDir60;
-      const isWindowLed = Math.abs(pctWindow) >= 0.50 && Math.abs(spike60) >= 0.15 && spikeDir60;
+      const spikeDir60 = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
+      // PATH A: spike is the PRIMARY signal — just needs window to confirm direction (≥0.15%)
+      // The CLOB check (max 0.53) is the hard guard against already-repriced markets
+      const isSpikeLed  = Math.abs(spike60) >= 0.22 && Math.abs(pctWindow) >= 0.15 && spikeDir60;
+      // PATH B: larger sustained window move (≥0.40%) + recent momentum (spike60 ≥0.12%)
+      const isWindowLed = Math.abs(pctWindow) >= 0.40 && Math.abs(spike60) >= 0.12 && spikeDir60;
 
       if (!isReversal && !isSpikeLed && !isWindowLed) return;
 
@@ -438,9 +439,10 @@ class OracleLagArb extends EventEmitter {
       // Spike/Window: existing tiers.
       const maxClobPrice = isReversal
         ? (reversalStaleSidePrice > 0.80 ? 0.50 : reversalStaleSidePrice > 0.70 ? 0.45 : 0.40)
-        : (isSpikeLed && !isWindowLed) ? 0.55
+        : (isSpikeLed && !isWindowLed) ? 0.53   // spike-only: tight — CLOB must still be near 0.50
         : (Math.abs(pctWindow) > 2.0) ? 0.73
-        : (Math.abs(pctWindow) > 1.0) ? 0.64 : 0.56;
+        : (Math.abs(pctWindow) > 1.0) ? 0.64
+        : (Math.abs(pctWindow) > 0.50) ? 0.56 : 0.54; // window 0.40-0.50%: slightly tighter
 
       console.log(`[OracleLag] [${path}] ${symbol} window=${pctWindow>=0?'+':''}${pctWindow.toFixed(3)}% 60s=${spike60>=0?'+':''}${spike60.toFixed(3)}% | CLOB ${targetDirection}=${clobPrice.toFixed(3)} max=${maxClobPrice} age=${wsAge}${isReversal ? ` | stale=${reversalStaleSidePrice.toFixed(3)}` : ''}`);
 
