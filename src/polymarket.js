@@ -206,17 +206,35 @@ class PolymarketClient {
     return 0;
   }
 
-  /** Place a limit buy order */
-  async placeBuyOrder(tokenId, price, sizeUsdc, tickSize = 0.01, negRisk = false) {
+  /** Place a limit buy order (GTC by default for oracle lag, FOK optional) */
+  async placeBuyOrder(tokenId, price, sizeUsdc, tickSize = 0.01, negRisk = false, orderType = OrderType.FOK) {
     if (!this.ready) throw new Error('Client not initialized');
 
-    const size = Math.floor(sizeUsdc / price); // shares to buy — must be whole number for FOK
+    const size = Math.floor(sizeUsdc / price); // shares to buy — whole number required
     const orderArgs = { tokenID: tokenId, price, side: Side.BUY, size };
     // Pass negRisk explicitly so order is signed against the correct exchange contract
     const marketInfo = { tickSize, negRisk: !!negRisk };
 
-    const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, OrderType.FOK);
+    const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, orderType);
     return resp;
+  }
+
+  /** Place a GTC limit sell order */
+  async placeSellOrder(tokenId, price, sizeShares, tickSize = 0.01) {
+    if (!this.ready) throw new Error('Client not initialized');
+    const size = Math.floor(sizeShares); // whole shares only
+    if (size < 1) throw new Error('Size too small (< 1 share)');
+    const orderArgs = { tokenID: tokenId, price, side: Side.SELL, size };
+    const marketInfo = { tickSize, negRisk: false };
+    const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, OrderType.GTC);
+    return resp;
+  }
+
+  /** Cancel a single order by ID */
+  async cancelOrder(orderId) {
+    try {
+      await this.client.cancelOrder({ orderID: orderId });
+    } catch { /* ignore */ }
   }
 
   /** Cancel all open orders */

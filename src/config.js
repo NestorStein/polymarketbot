@@ -17,6 +17,9 @@ function loadConfig() {
     gammaHost: process.env.GAMMA_HOST || 'https://gamma-api.polymarket.com',
     chainId:   parseInt(process.env.CHAIN_ID || '137', 10),
 
+    // AI
+    anthropicApiKey:    process.env.ANTHROPIC_API_KEY || '',
+
     // External feeds
     twitterBearerToken: process.env.TWITTER_BEARER_TOKEN || '',
     newsApiKey:         process.env.NEWS_API_KEY || '',
@@ -33,6 +36,7 @@ function loadConfig() {
     maxPositionUsdc:    parseFloat(process.env.MAX_POSITION_USDC    || '50'),
     reserveUsdc:        parseFloat(process.env.RESERVE_USDC         || '5'),
     minEdgeMultiplier:  parseFloat(process.env.MIN_EDGE_MULTIPLIER  || '1.5'),
+    maxDailyLossUsdc:   parseFloat(process.env.MAX_DAILY_LOSS_USDC  || '15'),
 
     // Taker fee rates by market category (effective March 31, 2026)
     // 5-min Up/Down markets use crypto_fees_v2: 7.2% taker (oracle lag edge ~30-50¢, far exceeds fee)

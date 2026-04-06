@@ -38,28 +38,35 @@ async function main() {
     process.exit(0);
   });
 
+  // Pause / resume trading from dashboard button
+  dashboard.on('bot_pause',  () => { engine.pause();  console.log('[Bot] Trading paused'); });
+  dashboard.on('bot_resume', () => { engine.resume(); console.log('[Bot] Trading resumed'); });
+
   // Relay crypto prices to dashboard
   engine.signals.priceFeed.on('price', () => {
     dashboard.cryptoPriceUpdate(engine.signals.priceFeed.getCurrentPrices());
   });
 
-  // Stats broadcast every 15s
-  setInterval(() => {
+  // Stats broadcast every 15s (with real balance fetch)
+  setInterval(async () => {
     const stats = engine.getStats();
     dashboard.scanUpdate(stats.scanCount);
-    dashboard.balanceUpdate(
-      stats.realizedPnl + config.reserveUsdc, // approx
-      stats,
-    );
+    const balance = await engine.poly.getBalance().catch(() => null);
+    if (balance !== null) {
+      dashboard.balanceUpdate(balance, stats);
+    }
   }, 15000);
 
   // Graceful shutdown
-  process.on('SIGINT', () => {
+  function shutdown() {
     console.log('\nShutting down...');
     engine.stop();
     dashboard.stopped();
+    dashboard.close();
     setTimeout(() => process.exit(0), 1000);
-  });
+  }
+  process.on('SIGINT',  shutdown);
+  process.on('SIGTERM', shutdown);
 
   const ok = await engine.start();
   if (!ok) {

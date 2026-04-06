@@ -58,7 +58,9 @@ class StrategyEngine {
     console.log(`[Strategy] Wallet: ${this.poly.wallet.address}`);
     console.log(`[Strategy] USDC balance: $${balance.toFixed(2)}`);
 
+    if (this.dashboard) this.dashboard._polyClient = this.poly;
     this.dashboard?.botStart({ wallet: this.poly.wallet.address, balance });
+
 
     const oracleLagOnly = this.config.oracleLagOnly;
 
@@ -74,9 +76,24 @@ class StrategyEngine {
     this.oracleLag.on('trade_executed', trade => {
       this.tradesExecuted++;
       this.dashboard?.tradeExecuted(trade);
+      this._appendBetLog(trade);
+    });
+    this.oracleLag.on('trade_cancelled', ({ orderId }) => {
+      this.tradesExecuted = Math.max(0, this.tradesExecuted - 1);
+      this.dashboard?.tradeCancelled(orderId);
     });
     this.oracleLag.on('scan_tick', data => {
       this.dashboard?.oracleScanTick(data);
+    });
+    this.oracleLag.on('ai_verdict', ({ symbol, direction, verdict, conf, summary, pass }) => {
+      const icon = pass ? '✅' : '🚫';
+      const msg  = `[AI] ${symbol} ${direction} → ${verdict} ${(conf*100).toFixed(0)}% conf ${icon} | ${summary?.slice(0,80)}`;
+      this.dashboard?._log(msg, pass ? 'success' : 'warn');
+    });
+    this.oracleLag.on('circuit_breaker', ({ reason, dailyLoss, maxDailyLoss, balance }) => {
+      const msg = `⛔ CIRCUIT BREAKER — daily loss $${dailyLoss.toFixed(2)} hit limit $${maxDailyLoss}. Trading paused for today. Balance: $${balance.toFixed(2)}`;
+      this.dashboard?._log(msg, 'error');
+      if (this.dashboard) this.dashboard.state.status = 'PAUSED';
     });
     await this.oracleLag.start();
 
@@ -341,6 +358,20 @@ class StrategyEngine {
 
   // ── Lifecycle ──────────────────────────────────────────────────────────────
 
+  pause() {
+    if (this.oracleLag) this.oracleLag.paused = true;
+    console.log('[Strategy] Trading PAUSED');
+  }
+
+  resume() {
+    if (this.oracleLag) this.oracleLag.paused = false;
+    console.log('[Strategy] Trading RESUMED');
+  }
+
+  isPaused() {
+    return !!(this.oracleLag?.paused);
+  }
+
   stop() {
     this.running = false;
     this.oracleLag?.stop();
@@ -350,11 +381,45 @@ class StrategyEngine {
     console.log('[Strategy] All strategies stopped');
   }
 
+  /** Append a trade entry to bet_log.json for analytics (path, CLOB price, etc.) */
+  _appendBetLog(trade) {
+    const fs   = require('fs');
+    const file = require('path').join(__dirname, '..', 'bet_log.json');
+    try {
+      let log = [];
+      if (fs.existsSync(file)) {
+        try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { log = []; }
+      }
+      const entry = {
+        ts:        trade.ts || Date.now(),
+        time:      new Date(trade.ts || Date.now()).toLocaleTimeString(),
+        market:    trade.market,
+        marketId:  trade.marketId,
+        marketUrl: trade.marketUrl || '',
+        side:      trade.side,
+        price:     trade.price,   // CLOB ask at trigger time
+        size:      trade.size,
+        orderId:   trade.orderId,
+        path:      trade.path,
+      };
+      log.push(entry);
+      fs.writeFileSync(file, JSON.stringify(log, null, 2));
+    } catch (err) {
+      console.warn('[Strategy] bet_log write failed:', err.message);
+    }
+  }
+
   getStats() {
+    const riskState = this.oracleLag ? {
+      sessionPeak:     this.oracleLag.sessionPeak,
+      dayStartBalance: this.oracleLag.dayStartBalance,
+      // dailyLoss and drawdownPct are recomputed against live balance in dashboard.balanceUpdate
+    } : null;
     return {
       scanCount: this.scanCount,
       opportunitiesFound: this.opportunitiesFound,
       tradesExecuted: this.tradesExecuted,
+      riskState,
       ...this.risk.getStats(),
     };
   }
