@@ -78,9 +78,10 @@ class StrategyEngine {
       this.dashboard?.tradeExecuted(trade);
       this._appendBetLog(trade);
     });
-    this.oracleLag.on('trade_cancelled', ({ orderId }) => {
+    this.oracleLag.on('trade_cancelled', ({ orderId, marketId }) => {
       this.tradesExecuted = Math.max(0, this.tradesExecuted - 1);
       this.dashboard?.tradeCancelled(orderId);
+      this._markBetCancelled(orderId);
     });
     this.oracleLag.on('scan_tick', data => {
       this.dashboard?.oracleScanTick(data);
@@ -406,6 +407,25 @@ class StrategyEngine {
       fs.writeFileSync(file, JSON.stringify(log, null, 2));
     } catch (err) {
       console.warn('[Strategy] bet_log write failed:', err.message);
+    }
+  }
+
+  /** Mark a previously logged bet as CANCELLED (unfilled GTC order) */
+  _markBetCancelled(orderId) {
+    if (!orderId) return;
+    const fs   = require('fs');
+    const file = require('path').join(__dirname, '..', 'bet_log.json');
+    try {
+      if (!fs.existsSync(file)) return;
+      let log = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const entry = log.find(e => e.orderId === orderId);
+      if (entry && !entry.result) {
+        entry.result = 'CANCELLED';
+        fs.writeFileSync(file, JSON.stringify(log, null, 2));
+        console.log(`[Strategy] bet_log marked CANCELLED: ${orderId.slice(0, 20)}…`);
+      }
+    } catch (err) {
+      console.warn('[Strategy] bet_log cancel mark failed:', err.message);
     }
   }
 

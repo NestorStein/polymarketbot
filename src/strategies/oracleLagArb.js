@@ -481,15 +481,13 @@ class OracleLagArb extends EventEmitter {
       const isSpikeLed  = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.12 && spikeDir60 && windowAgeMs >= 90000;
       // PATH B: window ≥ 0.55% + spike60 ≥ 0.12% + ≥90s into window
       const isWindowLed = Math.abs(pctWindow) >= 0.55 && Math.abs(spike60) >= 0.12 && spikeDir60 && windowAgeMs >= 90000;
-      // PATH D: early spike — first seconds of a sharp move, CLOB still stale.
-      // Requires BOTH spike15 AND spike10 to agree in direction (reduces false positives).
-      // Thresholds raised: spike15 ≥ 0.12%, spike10 ≥ 0.08% (was OR-based with lower bar).
-      const spikeDir15 = (pctWindow >= 0 && spike15 > 0) || (pctWindow <= 0 && spike15 < 0);
-      const spikeDir10 = (pctWindow >= 0 && spike10 > 0) || (pctWindow <= 0 && spike10 < 0);
-      const earlyAgree = spikeDir15 && spikeDir10 && Math.sign(spike15) === Math.sign(spike10);
-      const isEarlySpike = symbol !== 'SOL' && earlyAgree
-        && Math.abs(spike15) >= 0.12 && Math.abs(spike10) >= 0.08
-        && Math.abs(pctWindow) >= 0.07;  // raised from 0.04% — filters micro-spikes
+      // PATH D (EARLY): disabled — 0W/3L track record (-$24), all losses.
+      // Early spikes fire before the window has enough price history to confirm direction.
+      // SPIKE and WINDOW paths (which require ≥90s window age) have much better fill quality.
+      const spikeDir15  = false;
+      const spikeDir10  = false;
+      const earlyAgree  = false;
+      const isEarlySpike = false;
 
       // ── Multi-asset correlation filter ────────────────────────────────────────
       // If ≥4 assets are all moving the same direction (>0.15% window move), it's a
@@ -553,8 +551,8 @@ class OracleLagArb extends EventEmitter {
       // Data shows 0% win rate on fills below 20¢ (CLOB ~0.08-0.15). The theoretical payout
       // is high but the oracle lag edge vanishes at such extreme prices — MMs know these move
       // mostly on news/fundamentals, not mean-reversion lag.
-      if (clobPrice < 0.15) {
-        console.log(`[OracleLag] CLOB ${targetDirection}=${clobPrice.toFixed(3)} < 0.15 floor (0% win rate zone) — skip`);
+      if (clobPrice < 0.25) {
+        console.log(`[OracleLag] CLOB ${targetDirection}=${clobPrice.toFixed(3)} < 0.25 floor (weak zone, <25% win rate) — skip`);
         return;
       }
 
@@ -705,9 +703,8 @@ class OracleLagArb extends EventEmitter {
     // Reversal: sized by how wrong the CLOB is (stale side strength)
     const fraction = reversalStalePrice != null
       ? (reversalStalePrice > 0.80 ? 0.25 : reversalStalePrice > 0.75 ? 0.18 : 0.12)
-      : price < 0.20 ? 0.12   // cautious — new zone, limited data
-      : price < 0.30 ? 0.15   // 40% win rate zone — moderate size
-      : price < 0.38 ? 0.25   // sweet spot — 67% win rate, confident size
+      : price < 0.30 ? 0.15   // 0.25-0.30 zone — cautious, limited data
+      : price < 0.38 ? 0.25   // sweet spot (0.30-0.38) — 60% win rate, confident size
       : 0.12;                  // above cap, shouldn't reach here
 
     // Apply drawdown scale + absolute per-bet cap when balance is low
@@ -777,7 +774,7 @@ class OracleLagArb extends EventEmitter {
           // If partially filled at placement (immediatelyFilled=true), tokens are in wallet — keep the log.
           if (!immediatelyFilled) {
             console.log(`[OracleLag] GTC order cancelled (unfilled): ${order.orderID}`);
-            this.emit('trade_cancelled', { orderId: order.orderID });
+            this.emit('trade_cancelled', { orderId: order.orderID, marketId: market.condition_id });
           } else {
             console.log(`[OracleLag] GTC order cancelled remainder (was partially filled): ${order.orderID}`);
           }
