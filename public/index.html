@@ -639,7 +639,11 @@ function applyState(s) {
     const dailyLoss   = Math.max(0, (rs.dayStartBalance||0) - (s.balance||0));
     const ddColor = drawdownPct >= 35 ? 'var(--red)' : drawdownPct >= 20 ? 'var(--yellow)' : 'var(--muted2)';
     const dlColor = dailyLoss >= 12 ? 'var(--red)' : dailyLoss >= 8 ? 'var(--yellow)' : 'var(--muted2)';
-    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> <span style="color:var(--muted)">·</span> <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span>`;
+    const wsAgeMs = rs.lastBinanceTick ? (Date.now() - rs.lastBinanceTick) : null;
+    const wsAgeS  = wsAgeMs != null ? Math.round(wsAgeMs / 1000) : null;
+    const wsColor = wsAgeS == null ? 'var(--muted)' : wsAgeS > 30 ? 'var(--red)' : wsAgeS > 10 ? 'var(--yellow)' : 'var(--green)';
+    const wsLabel = wsAgeS == null ? '?' : wsAgeS > 30 ? `${wsAgeS}s ⚠` : `${wsAgeS}s`;
+    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> <span style="color:var(--muted)">·</span> <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span> <span style="color:var(--muted)">·</span> <span style="color:${wsColor}">BNB: ${wsLabel}</span>`;
     riskEl.style.display = 'inline';
   } else if (riskEl) {
     riskEl.style.display = 'none';

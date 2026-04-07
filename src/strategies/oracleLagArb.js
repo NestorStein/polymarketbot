@@ -67,6 +67,9 @@ class OracleLagArb extends EventEmitter {
     this.sessionPeak      = 0;         // highest balance seen this session (for drawdown calc)
     this.dayString        = '';        // YYYY-MM-DD of current trading day
     this.dayStartBalance  = 0;         // balance at start of current calendar day
+
+    // ── WS health watchdog ─────────────────────────────────────────────────────
+    this.lastBinanceTick  = 0;         // ms timestamp of last Binance aggTrade message
   }
 
   /** Start oracle lag monitor */
@@ -77,6 +80,7 @@ class OracleLagArb extends EventEmitter {
     this._connectClobWs();
     setInterval(() => this._refreshCryptoMarkets(), 15 * 1000); // ↑ from 30s
     this._scheduleWindowReset();
+    this._startBinanceWatchdog();
     console.log('[OracleLag] Started — watching BTC/ETH/SOL/XRP/DOGE/BNB Up or Down markets');
   }
 
@@ -239,6 +243,7 @@ class OracleLagArb extends EventEmitter {
         const price  = parseFloat(trade.p);
         if (isNaN(price)) return;
 
+        this.lastBinanceTick = Date.now();
         this.prices[symbol] = { current: price, ts: Date.now() };
         this._pushPriceHistory(symbol, price);
 
@@ -269,6 +274,20 @@ class OracleLagArb extends EventEmitter {
     this.ws.on('close', () => {
       if (this.running) setTimeout(() => this._connectBinance(), 3000);
     });
+  }
+
+  /** Watchdog: if no Binance tick in >30s, force-reconnect the WS */
+  _startBinanceWatchdog() {
+    this.lastBinanceTick = Date.now(); // seed so we don't fire immediately on start
+    setInterval(() => {
+      if (!this.running) return;
+      const silentMs = Date.now() - this.lastBinanceTick;
+      if (silentMs > 30_000) {
+        console.warn(`[OracleLag] Binance WS silent for ${Math.round(silentMs / 1000)}s — forcing reconnect`);
+        try { this.ws?.terminate(); } catch { /* ignore */ }
+        this._connectBinance();
+      }
+    }, 15_000); // check every 15s
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

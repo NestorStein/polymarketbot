@@ -411,8 +411,9 @@ class StrategyEngine {
 
   getStats() {
     const riskState = this.oracleLag ? {
-      sessionPeak:     this.oracleLag.sessionPeak,
-      dayStartBalance: this.oracleLag.dayStartBalance,
+      sessionPeak:      this.oracleLag.sessionPeak,
+      dayStartBalance:  this.oracleLag.dayStartBalance,
+      lastBinanceTick:  this.oracleLag.lastBinanceTick,
       // dailyLoss and drawdownPct are recomputed against live balance in dashboard.balanceUpdate
     } : null;
     return {
