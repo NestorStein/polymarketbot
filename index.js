@@ -73,6 +73,12 @@ async function main() {
     console.error('Engine failed to start. Set POLYGON_PRIVATE_KEY in .env');
     process.exit(1);
   }
+
+  // Telegram command polling — /report returns live bot state
+  const tg = require('./src/telegram');
+  tg.startPolling(async (cmd) => {
+    if (cmd === '/report') tg.send(await engine.buildReport());
+  });
 }
 
 main().catch(err => {

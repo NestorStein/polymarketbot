@@ -220,12 +220,12 @@ class PolymarketClient {
   }
 
   /** Place a GTC limit sell order */
-  async placeSellOrder(tokenId, price, sizeShares, tickSize = 0.01) {
+  async placeSellOrder(tokenId, price, sizeShares, tickSize = 0.01, negRisk = false) {
     if (!this.ready) throw new Error('Client not initialized');
     const size = Math.floor(sizeShares); // whole shares only
     if (size < 1) throw new Error('Size too small (< 1 share)');
     const orderArgs = { tokenID: tokenId, price, side: Side.SELL, size };
-    const marketInfo = { tickSize, negRisk: false };
+    const marketInfo = { tickSize, negRisk: !!negRisk };
     const resp = await this.client.createAndPostOrder(orderArgs, marketInfo, OrderType.GTC);
     return resp;
   }

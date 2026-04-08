@@ -429,12 +429,118 @@ class StrategyEngine {
     }
   }
 
+  async buildReport() {
+    const fs   = require('fs');
+    const path = require('path');
+    const https = require('https');
+    const now  = new Date();
+    const utc  = now.toUTCString().replace(' GMT', ' UTC');
+
+    // Balance / P&L
+    const balance  = this.oracleLag?._cachedBalance ?? 0;
+    const rawStart = this.oracleLag?.dayStartBalance ?? 0;
+    const dayStart = rawStart > 0 ? rawStart : balance;  // 0 means not yet set → use current
+    const pnl      = balance - dayStart;
+    const pnlSign  = pnl >= 0 ? '+' : '';
+    const status   = this.oracleLag?.paused ? 'PAUSED' : 'SCANNING';
+
+    // Trade counts
+    const dayTrades = this.oracleLag?.dayTradeCount    ?? 0;
+    const maxTrades = this.oracleLag?.config?.maxDailyTrades ?? 3;
+
+    // Market counts
+    const markets = this.oracleLag?.markets;
+    const m5  = markets ? [...markets.values()].filter(m => m._timeframe === '5m').length  : 0;
+    const m15 = markets ? [...markets.values()].filter(m => m._timeframe === '15m').length : 0;
+    const m4h = markets ? [...markets.values()].filter(m => m._timeframe === '4h').length  : 0;
+
+    // Binance WS freshness
+    const lastTick = this.oracleLag?.lastBinanceTick ?? 0;
+    const tickAge  = lastTick ? Math.round((Date.now() - lastTick) / 1000) : null;
+    const wsLine   = tickAge !== null ? `Binance WS: ${tickAge}s ago` : 'Binance WS: no data yet';
+
+    // Helper: fetch JSON from Gamma API
+    function gammaGet(urlPath) {
+      return new Promise((resolve) => {
+        const req = https.request(
+          { hostname: 'gamma-api.polymarket.com', path: urlPath, method: 'GET', headers: { Accept: 'application/json' } },
+          res => { let raw = ''; res.on('data', d => raw += d); res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve(null); } }); }
+        );
+        req.on('error', () => resolve(null));
+        req.setTimeout(5000, () => { req.destroy(); resolve(null); });
+        req.end();
+      });
+    }
+
+    // Last 5 bets (non-cancelled), most recent first
+    let betsSection = '';
+    try {
+      const file = path.join(__dirname, '..', 'bet_log.json');
+      if (fs.existsSync(file)) {
+        const log = JSON.parse(fs.readFileSync(file, 'utf8'));
+        const last5 = log.filter(e => e.result !== 'CANCELLED').slice(-5).reverse();
+
+        if (last5.length) {
+          const resolved = await Promise.all(last5.map(async e => {
+            if (!e.marketUrl) return { ...e, status: 'pending' };
+            const slug = e.marketUrl.split('/event/')[1];
+            if (!slug) return { ...e, status: 'pending' };
+
+            const data = await gammaGet('/events?slug=' + slug);
+            const mkt = Array.isArray(data) ? data[0]?.markets?.[0] : null;
+            if (!mkt?.closed) return { ...e, status: 'pending' };
+
+            // outcomePrices may be array or JSON string
+            let prices   = mkt.outcomePrices;
+            let outcomes = mkt.outcomes;
+            if (typeof prices   === 'string') try { prices   = JSON.parse(prices);   } catch { prices   = []; }
+            if (typeof outcomes === 'string') try { outcomes = JSON.parse(outcomes); } catch { outcomes = []; }
+
+            const idx = outcomes.findIndex(o => o.toLowerCase() === (e.side || '').toLowerCase());
+            if (idx === -1) return { ...e, status: 'unknown' };
+
+            const won  = parseFloat(prices[idx]) >= 0.99;
+            const betPnl = won ? e.size * (1 / (e.price || 0.5) - 1) : -e.size;
+            return { ...e, status: won ? 'win' : 'loss', betPnl };
+          }));
+
+          const lines = resolved.map(e => {
+            const icon  = e.status === 'win' ? '🟢' : e.status === 'loss' ? '🔴' : '⏳';
+            const label = (e.market || '').replace(/.*Up or Down - /, '').slice(0, 22);
+            const cost  = `$${(e.size || 0).toFixed(2)}`;
+            if (e.status === 'win')  return `${icon} <b>+$${e.betPnl.toFixed(2)}</b> | ${e.side} ${label} @${(e.price||0).toFixed(2)}`;
+            if (e.status === 'loss') return `${icon} <b>-$${Math.abs(e.betPnl).toFixed(2)}</b> | ${e.side} ${label} @${(e.price||0).toFixed(2)}`;
+            return `${icon} ${cost} | ${e.side} ${label} @${(e.price||0).toFixed(2)} (open)`;
+          });
+
+          betsSection = '\n\n<b>Last 5 bets:</b>\n' + lines.join('\n');
+        }
+      }
+    } catch { /* ignore */ }
+
+    return (
+      `📊 <b>Bot Report</b> — ${utc}\n` +
+      `Balance: $${balance.toFixed(2)} | Day start: $${dayStart.toFixed(2)}\n` +
+      `Today P&amp;L: ${pnlSign}$${pnl.toFixed(2)}\n` +
+      `Trades today: ${dayTrades}/${maxTrades}\n` +
+      `Markets: ${m5}×5m | ${m15}×15m | ${m4h}×4h\n` +
+      `${wsLine}\n` +
+      `Status: <b>${status}</b>` +
+      betsSection
+    );
+  }
+
   getStats() {
+    const markets = this.oracleLag ? this.oracleLag.markets : null;
     const riskState = this.oracleLag ? {
       sessionPeak:      this.oracleLag.sessionPeak,
       dayStartBalance:  this.oracleLag.dayStartBalance,
       lastBinanceTick:  this.oracleLag.lastBinanceTick,
-      // dailyLoss and drawdownPct are recomputed against live balance in dashboard.balanceUpdate
+      dayTradeCount:    this.oracleLag.dayTradeCount   || 0,
+      maxDailyTrades:   this.oracleLag.config?.maxDailyTrades || 3,
+      markets5m:  markets ? [...markets.values()].filter(m => m._timeframe === '5m').length  : 0,
+      markets15m: markets ? [...markets.values()].filter(m => m._timeframe === '15m').length : 0,
+      markets4h:  markets ? [...markets.values()].filter(m => m._timeframe === '4h').length  : 0,
     } : null;
     return {
       scanCount: this.scanCount,

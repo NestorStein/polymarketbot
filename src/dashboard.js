@@ -214,19 +214,38 @@ class Dashboard extends EventEmitter {
           const entryTs    = Math.min(...m.buys.map(b => b.timestamp)) * 1000;
           const isOracleLagTitle = title.includes('Up or Down');
           const sellTs     = m.sells.length ? Math.max(...m.sells.map(s => s.timestamp)) * 1000 : null;
-          // For 5-min oracle lag markets the market resolves ~5min after entry.
-          // REDEEM txs fire hours/days later and must NOT be used as exit time.
+          // Detect oracle lag market duration from title time range (e.g. "7:45PM-8:00PM" → 15 min)
+          const oracleDurationMs = (() => {
+            if (!isOracleLagTitle) return 300000;
+            const rm = title.match(/(\d{1,2}:\d{2}(?:AM|PM))-(\d{1,2}:\d{2}(?:AM|PM))/i);
+            if (!rm) return 300000;
+            const toMin = t => {
+              const [h, rest] = t.split(':');
+              const mins = parseInt(rest.slice(0, 2));
+              const isPm = rest.slice(2).toUpperCase() === 'PM';
+              let hrs = parseInt(h);
+              if (isPm && hrs !== 12) hrs += 12;
+              if (!isPm && hrs === 12) hrs = 0;
+              return hrs * 60 + mins;
+            };
+            let diff = toMin(rm[2]) - toMin(rm[1]);
+            if (diff <= 0) diff += 24 * 60;
+            return diff * 60 * 1000;
+          })();
+          // REDEEM txs fire hours/days later — use duration-based exit for oracle lag markets.
           // Sell-backs are immediate exits so they keep their actual timestamp.
           const exitTs = result === 'OPEN'   ? null
-                       : hasSells            ? sellTs               // sold out — actual exit
-                       : isOracleLagTitle    ? entryTs + 300000     // 5-min market: resolved at entry+5m
+                       : hasSells            ? sellTs
+                       : isOracleLagTitle    ? entryTs + oracleDurationMs
                        : m.redeems.length    ? Math.max(...m.redeems.map(r => r.timestamp)) * 1000
                        : entryTs + 300000;
           const holdSecs = exitTs ? Math.round((exitTs - entryTs) / 1000) : null;
           const avgEntry = m.buys[0] ? parseFloat(m.buys[0].price) || 0 : 0;
 
+          const timeframe = oracleDurationMs >= 14400000 ? '4h' : oracleDurationMs >= 900000 ? '15m' : '5m';
           trades.push({
             title, asset,
+            timeframe:  isOracleLagTitle ? timeframe : null,
             side:       m.buys[0]?.outcome || '?',
             entryPrice: avgEntry,
             exitPrice:  result === 'WIN' ? 1.0 : result === 'LOSS' ? 0.0 : null,
@@ -337,12 +356,10 @@ class Dashboard extends EventEmitter {
     // Sell an open position via CLOB GTC order
     this.app.post('/api/sell', async (req, res) => {
       try {
-        const { tokenId, size, price } = req.body;
+        const { tokenId, size, price, tickSize, negRisk } = req.body;
         if (!tokenId || !size || !price) return res.status(400).json({ error: 'tokenId, size, price required' });
-        const { PolymarketClient } = require('./polymarket');
-        // Use the engine's poly client if available, otherwise error
         if (!this._polyClient) return res.status(503).json({ error: 'Bot not ready' });
-        const order = await this._polyClient.placeSellOrder(tokenId, parseFloat(price), parseFloat(size));
+        const order = await this._polyClient.placeSellOrder(tokenId, parseFloat(price), parseFloat(size), tickSize ?? 0.01, negRisk ?? false);
         if (order?.error || !order?.orderID) return res.status(400).json({ error: order?.error || 'Order rejected' });
         res.json({ success: true, orderId: order.orderID });
       } catch (err) {

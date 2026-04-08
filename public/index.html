@@ -132,7 +132,7 @@
 
     /* ── SCAN GRID ── */
     .scan-grid {
-      display:grid; grid-template-columns:repeat(6,1fr); gap:1px; background:var(--border);
+      display:grid; grid-template-columns:repeat(5,1fr) 0.6fr; gap:1px; background:var(--border);
     }
     .sc {
       background:var(--card2); padding:12px 14px;
@@ -161,6 +161,10 @@
     .sc-link:hover { color:var(--blue); }
     .sc-link:empty { display:none; }
     .sc-age   { font-size:9px; color:var(--muted); margin-left:auto; }
+    .tf-badge { font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; letter-spacing:0.4px; text-transform:uppercase; }
+    .tf-5m  { background:rgba(78,95,126,0.2);  color:var(--muted2); }
+    .tf-15m { background:rgba(63,128,255,0.15); color:var(--blue); }
+    .tf-4h  { background:rgba(168,127,255,0.15); color:var(--purple); }
     .sc-mkt   { font-size:9px; color:var(--muted2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; font-family:'JetBrains Mono',monospace; }
 
     /* ── TABLE ── */
@@ -236,12 +240,12 @@
     <div class="logo-icon">P</div>
     <div>
       <div class="logo-text">Polymarket Bot</div>
-      <div class="logo-sub">Oracle Lag Arb</div>
+      <div class="logo-sub">5m · 15m · 4h Oracle Lag</div>
     </div>
   </div>
   <div class="nav-links">
     <a href="/" class="nav-link active">⚡ Dashboard</a>
-    <a href="/report.html" class="nav-link">📊 Reports</a>
+    <a href="/analysis.html" class="nav-link">📊 Analysis</a>
   </div>
   <div class="status-pill" id="status-pill">
     <div class="dot pulse" id="status-dot"></div>
@@ -302,7 +306,7 @@
   <!-- LIVE SCANNER -->
   <div class="panel">
     <div class="ph">
-      <div class="pt"><span class="ic">⚡</span> Live Signal Scanner</div>
+      <div class="pt"><span class="ic">⚡</span> Live Signal Scanner <span id="markets-count" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px"></span></div>
       <div style="display:flex;align-items:center;gap:8px">
         <span id="window-countdown" style="font-size:11px;color:var(--muted2);font-family:'JetBrains Mono',monospace">—</span>
         <span class="pbadge" id="scan-badge">Waiting…</span>
@@ -315,6 +319,7 @@
         <div class="sc-spike" id="scs-BTC">spike —</div>
         <div class="sc-clob bad" id="scc-BTC">CLOB —</div>
         <div class="sc-row">
+          <span class="tf-badge tf-5m" id="sct-BTC">5m</span>
           <div class="sc-badge sb-idle" id="scb-BTC">IDLE</div>
           <div class="sc-age" id="sca-BTC"></div>
         </div>
@@ -327,23 +332,17 @@
         <div class="sc-spike" id="scs-ETH">spike —</div>
         <div class="sc-clob bad" id="scc-ETH">CLOB —</div>
         <div class="sc-row">
+          <span class="tf-badge tf-5m" id="sct-ETH">5m</span>
           <div class="sc-badge sb-idle" id="scb-ETH">IDLE</div>
           <div class="sc-age" id="sca-ETH"></div>
         </div>
         <div class="sc-mkt" id="scm-ETH"></div>
         <a class="sc-link" id="scl-ETH" href="#" target="_blank"></a>
       </div>
-      <div class="sc" id="sc-SOL">
-        <div class="sc-sym">SOL</div>
-        <div class="sc-win flat" id="scw-SOL">—</div>
-        <div class="sc-spike" id="scs-SOL">spike —</div>
-        <div class="sc-clob bad" id="scc-SOL">CLOB —</div>
-        <div class="sc-row">
-          <div class="sc-badge sb-idle" id="scb-SOL">IDLE</div>
-          <div class="sc-age" id="sca-SOL"></div>
-        </div>
-        <div class="sc-mkt" id="scm-SOL"></div>
-        <a class="sc-link" id="scl-SOL" href="#" target="_blank"></a>
+      <div class="sc" id="sc-SOL" style="opacity:0.3;pointer-events:none">
+        <div class="sc-sym" style="text-decoration:line-through">SOL</div>
+        <div style="font-size:10px;color:var(--muted);margin-top:4px">Disabled</div>
+        <div style="font-size:9px;color:var(--muted);margin-top:2px">1W/7L · 13% win rate</div>
       </div>
       <div class="sc" id="sc-XRP">
         <div class="sc-sym">XRP</div>
@@ -351,6 +350,7 @@
         <div class="sc-spike" id="scs-XRP">spike —</div>
         <div class="sc-clob bad" id="scc-XRP">CLOB —</div>
         <div class="sc-row">
+          <span class="tf-badge tf-5m" id="sct-XRP">5m</span>
           <div class="sc-badge sb-idle" id="scb-XRP">IDLE</div>
           <div class="sc-age" id="sca-XRP"></div>
         </div>
@@ -363,6 +363,7 @@
         <div class="sc-spike" id="scs-BNB">spike —</div>
         <div class="sc-clob bad" id="scc-BNB">CLOB —</div>
         <div class="sc-row">
+          <span class="tf-badge tf-5m" id="sct-BNB">5m</span>
           <div class="sc-badge sb-idle" id="scb-BNB">IDLE</div>
           <div class="sc-age" id="sca-BNB"></div>
         </div>
@@ -375,6 +376,7 @@
         <div class="sc-spike" id="scs-DOGE">spike —</div>
         <div class="sc-clob bad" id="scc-DOGE">CLOB —</div>
         <div class="sc-row">
+          <span class="tf-badge tf-5m" id="sct-DOGE">5m</span>
           <div class="sc-badge sb-idle" id="scb-DOGE">IDLE</div>
           <div class="sc-age" id="sca-DOGE"></div>
         </div>
@@ -383,12 +385,13 @@
       </div>
     </div>
     <!-- Scanner help text -->
-    <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:20px;font-size:10px;color:var(--muted)">
-      <span>Window %: price move since 5-min reset</span>
+    <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:20px;font-size:10px;color:var(--muted);flex-wrap:wrap">
+      <span>Window %: price move since last 5-min reset</span>
       <span>Spike: move in last 60s</span>
-      <span style="color:var(--green)">CLOB green = below threshold (tradeable lag)</span>
-      <span style="color:var(--red)">CLOB red = market already repriced</span>
-      <span style="color:var(--yellow)">🔥 FIRE = order will be placed</span>
+      <span style="color:var(--green)">CLOB green = below cap (oracle lag present)</span>
+      <span style="color:var(--red)">CLOB red = market repriced</span>
+      <span style="color:var(--yellow)">🔥 FIRE = order placing</span>
+      <span><span style="color:var(--muted2)">5m</span> / <span style="color:var(--blue)">15m</span> / <span style="color:var(--purple)">4h</span> = timeframe being scanned</span>
     </div>
   </div>
 
@@ -517,6 +520,7 @@ function updateScanCell(d) {
   const sEl  = document.getElementById('scs-' + sym);
   const cEl  = document.getElementById('scc-' + sym);
   const bEl  = document.getElementById('scb-' + sym);
+  const tEl  = document.getElementById('sct-' + sym);
   const lEl  = document.getElementById('scl-' + sym);
   const cell = document.getElementById('sc-' + sym);
   if (!wEl) return;
@@ -538,6 +542,13 @@ function updateScanCell(d) {
   cEl.textContent  = 'CLOB ' + d.direction + ' ' + clob.toFixed(3) + ' / max ' + max;
   cEl.className    = 'sc-clob ' + (ok ? 'ok' : 'bad');
 
+  // Timeframe badge
+  if (tEl) {
+    const tf = d.timeframe || '5m';
+    tEl.textContent = tf.toUpperCase();
+    tEl.className = 'tf-badge ' + (tf === '4h' ? 'tf-4h' : tf === '15m' ? 'tf-15m' : 'tf-5m');
+  }
+
   if (d.status === 'ready') {
     bEl.textContent = '🔥 FIRE!';
     bEl.className = 'sc-badge sb-ready';
@@ -557,16 +568,19 @@ function updateScanCell(d) {
     lEl.textContent = '';
   }
 
-  // Show the specific window being scanned (parse slug timestamp → "HH:MM – HH:MM")
+  // Show the specific window being scanned — parse slug timestamp → "HH:MM – HH:MM"
+  // Duration depends on timeframe: 5m=300s, 15m=900s, 4h=14400s
   const mEl = document.getElementById('scm-' + sym);
   if (mEl && d.marketSlug) {
     const parts = d.marketSlug.split('-');
     const wTs = parseInt(parts[parts.length - 1]);
     if (!isNaN(wTs)) {
+      const tf = d.timeframe || '5m';
+      const duration = tf === '4h' ? 14400 : tf === '15m' ? 900 : 300;
       const fmt = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
       const msLeft = d.msLeft || 0;
       const timeLeft = msLeft > 0 ? ' (' + Math.ceil(msLeft / 1000) + 's)' : '';
-      mEl.textContent = fmt(wTs * 1000) + ' – ' + fmt((wTs + 300) * 1000) + timeLeft;
+      mEl.textContent = fmt(wTs * 1000) + ' – ' + fmt((wTs + duration) * 1000) + timeLeft;
     }
   } else if (mEl) {
     mEl.textContent = '';
@@ -631,7 +645,7 @@ function applyState(s) {
 
   if (s.wallet) document.getElementById('wallet-label').textContent = s.wallet.slice(0,6) + '…' + s.wallet.slice(-4);
 
-  // ── Risk state: drawdown + daily loss ──────────────────────────────────────
+  // ── Risk state: drawdown + daily loss + markets count ─────────────────────
   const rs = s.riskState;
   const riskEl = document.getElementById('risk-state');
   if (riskEl && rs && rs.sessionPeak > 0) {
@@ -643,8 +657,17 @@ function applyState(s) {
     const wsAgeS  = wsAgeMs != null ? Math.round(wsAgeMs / 1000) : null;
     const wsColor = wsAgeS == null ? 'var(--muted)' : wsAgeS > 30 ? 'var(--red)' : wsAgeS > 10 ? 'var(--yellow)' : 'var(--green)';
     const wsLabel = wsAgeS == null ? '?' : wsAgeS > 30 ? `${wsAgeS}s ⚠` : `${wsAgeS}s`;
-    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> <span style="color:var(--muted)">·</span> <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span> <span style="color:var(--muted)">·</span> <span style="color:${wsColor}">BNB: ${wsLabel}</span>`;
+    const maxDT = rs.maxDailyTrades || 3;
+    const dtCount = rs.dayTradeCount || 0;
+    const dtColor = dtCount >= maxDT ? 'var(--red)' : dtCount >= maxDT - 1 ? 'var(--yellow)' : 'var(--green)';
+    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> <span style="color:var(--muted)">·</span> <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span> <span style="color:var(--muted)">·</span> <span style="color:${dtColor}">Trades: ${dtCount}/${maxDT}</span> <span style="color:var(--muted)">·</span> <span style="color:${wsColor}">WS: ${wsLabel}</span>`;
     riskEl.style.display = 'inline';
+    // Markets count in scanner header
+    const mcEl = document.getElementById('markets-count');
+    if (mcEl && (rs.markets5m != null)) {
+      const total = (rs.markets5m||0) + (rs.markets15m||0) + (rs.markets4h||0);
+      mcEl.textContent = `· ${total} mkts (${rs.markets5m} 5m · ${rs.markets15m} 15m · ${rs.markets4h} 4h)`;
+    }
   } else if (riskEl) {
     riskEl.style.display = 'none';
   }
