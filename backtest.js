@@ -37,11 +37,11 @@ const ASSETS    = ASSET_ARG ? ASSET_ARG.split(',') : ['btc', 'eth', 'doge'];
 const BINANCE_SYMBOLS = { btc: 'BTCUSDT', eth: 'ETHUSDT', doge: 'DOGEUSDT' };
 
 // ── Signal thresholds — exact match to live oracleLagArb.js ───────────────────
-const WINDOW_MIN_PCT     = 0.55;   // PATH B: |pctWindow| ≥ 0.55%
-const SPIKE60_MIN_PCT    = 0.12;   // PATH B: |spike60| ≥ 0.12%
+const WINDOW_MIN_PCT     = 0.70;   // PATH B: |pctWindow| ≥ 0.70% (raised from 0.55%)
+const SPIKE60_MIN_PCT    = 0.20;   // PATH B: |spike60| ≥ 0.20% (raised from 0.12%)
 const SPIKE_MIN_PCT      = 0.20;   // PATH A: |spike60| ≥ 0.20% (disabled live)
 const SPIKE_WINDOW_MIN   = 0.20;   // PATH A: |pctWindow| ≥ 0.20%
-const ANTI_BOUNCE_THRESH = 0.12;   // priorCtx must not oppose by > 0.12%
+const ANTI_BOUNCE_THRESH = 0.25;   // priorCtx must not oppose by > 0.25% (loosened from 0.12%)
 const NET_TREND_THRESH   = 0.15;   // netTrend8m must not oppose by > 0.15%
 
 // ── P&L estimation ────────────────────────────────────────────────────────────

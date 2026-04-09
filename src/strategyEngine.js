@@ -402,9 +402,21 @@ class StrategyEngine {
         size:      trade.size,
         orderId:   trade.orderId,
         path:      trade.path,
+        latency:   trade.latency || null,  // { signalToSubmitMs, submitToConfirmMs, totalMs }
       };
       log.push(entry);
       fs.writeFileSync(file, JSON.stringify(log, null, 2));
+
+      // Log latency distribution across all instrumented trades
+      if (trade.latency) {
+        const samples = log.filter(e => e.latency?.totalMs).map(e => e.latency.totalMs).sort((a, b) => a - b);
+        if (samples.length >= 3) {
+          const p = (pct) => samples[Math.floor(samples.length * pct / 100)];
+          console.log(`[Latency] n=${samples.length} | signal→submit: ${trade.latency.signalToSubmitMs}ms | submit→confirm: ${trade.latency.submitToConfirmMs}ms | total p50=${p(50)}ms p90=${p(90)}ms p99=${p(99)}ms`);
+        } else {
+          console.log(`[Latency] signal→submit: ${trade.latency.signalToSubmitMs}ms | submit→confirm: ${trade.latency.submitToConfirmMs}ms | total: ${trade.latency.totalMs}ms (need ${3 - samples.length} more for distribution)`);
+        }
+      }
     } catch (err) {
       console.warn('[Strategy] bet_log write failed:', err.message);
     }
@@ -518,13 +530,27 @@ class StrategyEngine {
       }
     } catch { /* ignore */ }
 
+    // Latency p50/p90/p99 from all instrumented trades in bet_log
+    let latencyLine = '';
+    try {
+      const lfile = path.join(__dirname, '..', 'bet_log.json');
+      if (fs.existsSync(lfile)) {
+        const llog = JSON.parse(fs.readFileSync(lfile, 'utf8'));
+        const samples = llog.filter(e => e.latency?.totalMs).map(e => e.latency.totalMs).sort((a, b) => a - b);
+        if (samples.length >= 3) {
+          const p = (pct) => samples[Math.floor(samples.length * pct / 100)];
+          latencyLine = `\nLatency p50=${p(50)}ms p90=${p(90)}ms p99=${p(99)}ms (n=${samples.length})`;
+        }
+      }
+    } catch { /* ignore */ }
+
     return (
       `📊 <b>Bot Report</b> — ${utc}\n` +
       `Balance: $${balance.toFixed(2)} | Day start: $${dayStart.toFixed(2)}\n` +
       `Today P&amp;L: ${pnlSign}$${pnl.toFixed(2)}\n` +
       `Trades today: ${dayTrades}/${maxTrades}\n` +
       `Markets: ${m5}×5m | ${m15}×15m | ${m4h}×4h\n` +
-      `${wsLine}\n` +
+      `${wsLine}${latencyLine}\n` +
       `Status: <b>${status}</b>` +
       betsSection
     );

@@ -95,20 +95,44 @@ class OracleLagArb extends EventEmitter {
     } catch { /* keep stale value */ }
   }
 
-  /** Seed dayTradeCount from bet_log.json so restarts don't lose today's count */
+  /** Seed dayTradeCount + dayStartBalance from persisted state so restarts don't lose today's data */
   _seedDayCountFromLog() {
+    const fs   = require('fs');
+    const path = require('path');
+    const today = new Date().toLocaleDateString();
+
+    // Restore dayStartBalance from day_state.json if it's from today
     try {
-      const fs   = require('fs');
-      const path = require('path');
+      const stateFile = path.join(__dirname, '..', '..', 'day_state.json');
+      if (fs.existsSync(stateFile)) {
+        const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+        if (state.date === today && state.startBalance > 0) {
+          this.dayStartBalance = state.startBalance;
+          console.log(`[OracleLag] Restored dayStartBalance=$${state.startBalance.toFixed(2)} from day_state`);
+        }
+      }
+    } catch { /* ignore */ }
+
+    // Seed dayTradeCount from bet_log
+    try {
       const file = path.join(__dirname, '..', '..', 'bet_log.json');
       if (!fs.existsSync(file)) return;
       const log   = JSON.parse(fs.readFileSync(file, 'utf8'));
-      const today = new Date().toLocaleDateString();
       const count = log.filter(e => e.result !== 'CANCELLED' && new Date(e.ts).toLocaleDateString() === today).length;
       if (count > 0) {
         this.dayTradeCount = count;
         console.log(`[OracleLag] Seeded dayTradeCount=${count} from bet_log`);
       }
+    } catch { /* ignore */ }
+  }
+
+  /** Persist today's start balance to disk so it survives restarts */
+  _persistDayState() {
+    try {
+      const fs   = require('fs');
+      const path = require('path');
+      const state = { date: new Date().toLocaleDateString(), startBalance: this.dayStartBalance };
+      fs.writeFileSync(path.join(__dirname, '..', '..', 'day_state.json'), JSON.stringify(state));
     } catch { /* ignore */ }
   }
 
@@ -545,9 +569,11 @@ class OracleLagArb extends EventEmitter {
         spike60 > 0 ? netTrend8m < -0.15   // UP spike but 8m net still DOWN >0.15%
                     : netTrend8m >  0.15   // DOWN spike but 8m net still UP >0.15%
       );
+      // Loosened from -0.12 → -0.25: backtest showed filter blocked 172 wins to save 4 losses.
+      // Net P&L impact was -$6,695. Keep the filter to catch clear bounces but don't over-restrict.
       const antiBouncePasses = priorContext === null
         ? !trendOpposesSpike
-        : (spike60 > 0 ? priorContext >= -0.12 : priorContext <= 0.12) && !trendOpposesSpike;
+        : (spike60 > 0 ? priorContext >= -0.25 : priorContext <= 0.25) && !trendOpposesSpike;
 
       // ── Both CLOB prices from WS cache (0ms) ──────────────────────────────
       // Reject ask ≥ 0.95: likely a stale high limit order from the WS snapshot, not real liquidity.
@@ -592,10 +618,14 @@ class OracleLagArb extends EventEmitter {
       // signal outcomes (from signal_log.json) against REVERSAL to make the call.
       const wouldBeSpike = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.20 && spikeDir60 && windowAgeMs >= 90000 && antiBouncePasses;
       const isSpikeLed   = false; // disabled — logging only
-      // PATH B: window ≥ 0.70% + spike60 ≥ 0.20% + ≥90s into window + no prior bounce
-      // Raised from 0.55%/0.12% → 0.70%/0.20%: backtest shows 99-100% WR at ≥0.70%
-      // (vs 98.7% at 0.55-0.70%). Larger moves = CLOB lag is more certain, fills more likely stale.
-      const isWindowLed = Math.abs(pctWindow) >= 0.70 && Math.abs(spike60) >= 0.20 && spikeDir60 && windowAgeMs >= 90000 && antiBouncePasses;
+      // PATH B thresholds vary by timeframe:
+      // 5m/15m: window ≥ 0.70% + spike60 ≥ 0.20% — calibrated from backtest
+      // 4h: window ≥ 1.00% + spike60 ≥ 0.35% — 4h markets need a stronger recent move
+      //     because pctWindow accumulates over hours (0.70% is noise in a 4h window).
+      //     spike60 is the real signal — it must be strong enough to lag the oracle.
+      const windowThresh = timeframe === '4h' ? 1.00 : 0.70;
+      const spike60Thresh = timeframe === '4h' ? 0.35 : 0.20;
+      const isWindowLed = Math.abs(pctWindow) >= windowThresh && Math.abs(spike60) >= spike60Thresh && spikeDir60 && windowAgeMs >= 90000 && antiBouncePasses;
       if (!antiBouncePasses && (Math.abs(spike60) >= 0.20 || Math.abs(pctWindow) >= 0.55)) {
         const bcReason = trendOpposesSpike ? `trend8m=${netTrend8m>=0?'+':''}${netTrend8m.toFixed(3)}%` : `priorCtx=${priorContext>=0?'+':''}${priorContext.toFixed(3)}%`;
         console.log(`[OracleLag] [BOUNCE-BLOCK] ${symbol} spike60=${spike60>=0?'+':''}${spike60.toFixed(3)}% ${bcReason} — recovery bounce, skipping SPIKE/WINDOW`);
@@ -759,9 +789,10 @@ class OracleLagArb extends EventEmitter {
         price: clobPrice, expectedEdge: (maxClobPrice - clobPrice).toFixed(3), msLeft,
       });
 
+      const signalTs = Date.now(); // ← latency measurement starts here
       this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path: finalPath, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft, blocked_by: null, traded: true, tokenId: targetToken.token_id });
       this.tradedMarkets.add(market.condition_id);
-      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null, isEarlyOnly, finalPath);
+      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null, isEarlyOnly, finalPath, signalTs);
 
     } catch (err) {
       console.warn('[OracleLag] Evaluate error:', err.message);
@@ -774,7 +805,7 @@ class OracleLagArb extends EventEmitter {
   // Trade execution
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5, reversalStalePrice = null, isEarlyOnly = false, path = '') {
+  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5, reversalStalePrice = null, isEarlyOnly = false, path = '', signalTs = Date.now()) {
     // Use cached balance (refreshed every 20s) — avoids HTTP round-trip before every order.
     // If cache is >60s stale, fetch fresh as a safety net.
     let balance = this._cachedBalance;
@@ -808,9 +839,10 @@ class OracleLagArb extends EventEmitter {
       this.dayStartBalance = balance;
       this.dayTradeCount   = 0;
       this.dayTradeString  = todayStr;
+      this._persistDayState();
       console.log(`[OracleLag] New day (${todayStr}) — counters reset. Start balance: $${balance.toFixed(2)}`);
     }
-    if (!this.dayStartBalance) this.dayStartBalance = balance;
+    if (!this.dayStartBalance) { this.dayStartBalance = balance; this._persistDayState(); }
 
     // ── Daily trade cap ───────────────────────────────────────────────────────
     const maxDailyTrades = this.config.maxDailyTrades || 3;
@@ -880,12 +912,16 @@ class OracleLagArb extends EventEmitter {
         this.tradedMarkets.delete(market.condition_id);
         return;
       }
-      console.log(`[OracleLag] Executing GTC: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (bid=${price.toFixed(3)}+${bidOffset}) depth=${depthShares.toFixed(0)}sh`);
+      const submitTs = Date.now();
+      const signalToSubmitMs = submitTs - signalTs;
+      console.log(`[OracleLag] Executing GTC: BUY ${direction} $${size.toFixed(2)} @ ${fillPrice.toFixed(3)} (bid=${price.toFixed(3)}+${bidOffset}) depth=${depthShares.toFixed(0)}sh | signal→submit: ${signalToSubmitMs}ms`);
 
       const { OrderType } = require('@polymarket/clob-client');
       const order = await this.poly.placeBuyOrder(tokenId, fillPrice, size, 0.01, false, OrderType.GTC);
+      const confirmTs = Date.now();
+      const submitToConfirmMs = confirmTs - submitTs;
       const orderId = order?.orderID || order?.errorMsg || JSON.stringify(order)?.slice(0, 200);
-      console.log(`[OracleLag] GTC order placed: ${orderId} status=${order?.status} takenUSDC=${order?.takingAmount}`);
+      console.log(`[OracleLag] GTC order placed: ${orderId} status=${order?.status} takenUSDC=${order?.takingAmount} | submit→confirm: ${submitToConfirmMs}ms | total: ${confirmTs - signalTs}ms`);
 
       if (order?.error || !order?.orderID) {
         const errMsg = order?.error || 'no orderID';
@@ -915,6 +951,7 @@ class OracleLagArb extends EventEmitter {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
         slug, marketUrl,
         tokenId, side: direction, price, size, orderId: order.orderID, path, ts: Date.now(),
+        latency: { signalToSubmitMs, submitToConfirmMs, totalMs: confirmTs - signalTs },
       });
 
       setTimeout(async () => {
