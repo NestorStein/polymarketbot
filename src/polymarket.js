@@ -206,6 +206,20 @@ class PolymarketClient {
     return 0;
   }
 
+  /**
+   * Pre-warm the clob-client's tick-size and fee-rate caches for a token.
+   * Call this at signal fire time — by the time we submit the order, the
+   * cache is hot and createOrder skips the HTTP round-trips (~50-150ms saved).
+   * Fire-and-forget; never throws.
+   */
+  prewarmOrder(tokenId) {
+    if (!this.ready || !tokenId) return;
+    Promise.all([
+      this.client._resolveTickSize(tokenId),
+      this.client._resolveFeeRateBps(tokenId),
+    ]).catch(() => {});
+  }
+
   /** Place a limit buy order (GTC by default for oracle lag, FOK optional) */
   async placeBuyOrder(tokenId, price, sizeUsdc, tickSize = 0.01, negRisk = false, orderType = OrderType.FOK) {
     if (!this.ready) throw new Error('Client not initialized');

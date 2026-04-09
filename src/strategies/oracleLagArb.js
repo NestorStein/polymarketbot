@@ -548,32 +548,9 @@ class OracleLagArb extends EventEmitter {
       const spike15 = histAge >=  5 ? this._getRecentMove(symbol, 15) : 0;
       const spike10 = histAge >=  3 ? this._getRecentMove(symbol, 10) : 0;
 
-      // ── Anti-bounce: prior-context check for SPIKE/WINDOW paths ───────────
-      // "priorContext" = net move from 8-min-ago to 2-min-ago.
-      // Extended from 5m → 8m lookback: prior drops that fell just outside the old
-      // 5-min window were still causing bounces (BTC Apr 8 case: blocked for many ticks
-      // at priorCtx=-0.28%, then priorCtx faded above -0.12% as drop exited window → trade
-      // fired and lost — the bounce context was real, just too old for the 5m window).
-      // 8m lookback keeps the prior drop visible for 6 more minutes.
-      //
-      // "netTrend8m" = raw 8-min net move (independent of move2m).
-      // Guards against cases where the prior drop is so old it fell out even of the 8m window
-      // but the overall 8-min trend is still net-negative — i.e. we're in a sustained dump.
-      const move8m = histAge >= 420 ? this._getRecentMove(symbol, 480) : null;
-      const move2m = histAge >=  90 ? this._getRecentMove(symbol, 120) : null;
-      const priorContext = (move8m !== null && move2m !== null) ? move8m - move2m : null;
-      // Additional guard: if the full 8-min net trend opposes the spike direction by >0.15%,
-      // we're still in a broader counter-trend move — block even if priorCtx passes.
-      const netTrend8m = move8m;
-      const trendOpposesSpike = netTrend8m !== null && (
-        spike60 > 0 ? netTrend8m < -0.15   // UP spike but 8m net still DOWN >0.15%
-                    : netTrend8m >  0.15   // DOWN spike but 8m net still UP >0.15%
-      );
-      // Loosened from -0.12 → -0.25: backtest showed filter blocked 172 wins to save 4 losses.
-      // Net P&L impact was -$6,695. Keep the filter to catch clear bounces but don't over-restrict.
-      const antiBouncePasses = priorContext === null
-        ? !trendOpposesSpike
-        : (spike60 > 0 ? priorContext >= -0.25 : priorContext <= 0.25) && !trendOpposesSpike;
+      // Anti-bounce filter REMOVED — 90-day backtest showed net -$24,868 impact:
+      // blocked 646 wins to save only 29 losses. Broad-market guard (≥4 assets) and
+      // velocity check (CLOB moving ≥0.02 in 5s) handle the real bounce cases.
 
       // ── Both CLOB prices from WS cache (0ms) ──────────────────────────────
       // Reject ask ≥ 0.95: likely a stale high limit order from the WS snapshot, not real liquidity.
@@ -616,26 +593,16 @@ class OracleLagArb extends EventEmitter {
       // wouldBeSpike is still computed and logged so we can evaluate from data later
       // whether re-enabling is justified. After 50+ REVERSAL trades, compare SPIKE
       // signal outcomes (from signal_log.json) against REVERSAL to make the call.
-      const wouldBeSpike = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.20 && spikeDir60 && windowAgeMs >= 90000 && antiBouncePasses;
-      const isSpikeLed   = false; // disabled — logging only
+      const wouldBeSpike = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.20 && spikeDir60 && windowAgeMs >= 90000;
+      const isSpikeLed   = false; // disabled pending latency p99 data
       // PATH B thresholds vary by timeframe:
-      // 5m/15m: window ≥ 0.70% + spike60 ≥ 0.20% — calibrated from backtest
-      // 4h: window ≥ 1.00% + spike60 ≥ 0.35% — 4h markets need a stronger recent move
-      //     because pctWindow accumulates over hours (0.70% is noise in a 4h window).
-      //     spike60 is the real signal — it must be strong enough to lag the oracle.
-      const windowThresh = timeframe === '4h' ? 1.00 : 0.70;
+      // 5m/15m: window ≥ 0.70% + spike60 ≥ 0.20%
+      // 4h: window ≥ 1.00% + spike60 ≥ 0.35% (0.70% is noise over 4h)
+      const windowThresh  = timeframe === '4h' ? 1.00 : 0.70;
       const spike60Thresh = timeframe === '4h' ? 0.35 : 0.20;
-      const isWindowLed = Math.abs(pctWindow) >= windowThresh && Math.abs(spike60) >= spike60Thresh && spikeDir60 && windowAgeMs >= 90000 && antiBouncePasses;
-      if (!antiBouncePasses && (Math.abs(spike60) >= 0.20 || Math.abs(pctWindow) >= 0.55)) {
-        const bcReason = trendOpposesSpike ? `trend8m=${netTrend8m>=0?'+':''}${netTrend8m.toFixed(3)}%` : `priorCtx=${priorContext>=0?'+':''}${priorContext.toFixed(3)}%`;
-        console.log(`[OracleLag] [BOUNCE-BLOCK] ${symbol} spike60=${spike60>=0?'+':''}${spike60.toFixed(3)}% ${bcReason} — recovery bounce, skipping SPIKE/WINDOW`);
-        // Log would-be SPIKE signals so bounce data accumulates in signal_log
-        const bounceDir = spike60 > 0 ? 'UP' : 'DOWN';
-        const bounceToken = bounceDir === 'UP' ? upToken : downToken;
-        this._logSignalEvent({ type: 'BOUNCE_BLOCK', symbol, timeframe, direction: bounceDir, pctWindow, spike60, priorContext, netTrend8m, blocked_by: 'BOUNCE_BLOCK', traded: false, tokenId: bounceToken.token_id });
-      }
-      // Log disabled SPIKE signals that would have fired (not bounce-blocked, just disabled)
-      if (wouldBeSpike && !(!antiBouncePasses)) {
+      const isWindowLed   = Math.abs(pctWindow) >= windowThresh && Math.abs(spike60) >= spike60Thresh && spikeDir60 && windowAgeMs >= 90000;
+      // Log disabled SPIKE signals for future re-enable evaluation
+      if (wouldBeSpike && !isSpikeLed) {
         const spikeDir = pctWindow > 0 ? 'UP' : 'DOWN';
         const spikeToken = spikeDir === 'UP' ? upToken : downToken;
         const spikeClobRaw = spikeDir === 'UP' ? upClobAsk : downClobAsk;
@@ -790,6 +757,10 @@ class OracleLagArb extends EventEmitter {
       });
 
       const signalTs = Date.now(); // ← latency measurement starts here
+      // Pre-warm clob-client tick-size + fee-rate cache now, in parallel with
+      // the remaining sync work below. By the time placeBuyOrder runs, the HTTP
+      // calls are already done and createOrder only needs to sign locally.
+      this.poly.prewarmOrder(targetToken.token_id);
       this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path: finalPath, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft, blocked_by: null, traded: true, tokenId: targetToken.token_id });
       this.tradedMarkets.add(market.condition_id);
       await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null, isEarlyOnly, finalPath, signalTs);
