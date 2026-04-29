@@ -3,6 +3,13 @@
 /**
  * Oracle Lag Arb — Comprehensive Backtest
  *
+ * Reflects current live oracleLagArb.js thresholds (Apr 2026):
+ *   PATH A (SPIKE):   |spike60| ≥ 0.20% + |window| ≥ 0.20%, direction agrees, windowAge ≥ 90s
+ *   PATH B (WINDOW):  |window| ≥ 0.70% + |spike60| ≥ 0.20%, direction agrees, windowAge ≥ 90s
+ *   PATH E (LATE):    5m market, 3+ min in, |window| ≥ 0.35%, spike60 agrees
+ *   Anti-bounce:      REMOVED — 90-day backtest showed net -$24,868 (blocked 646 wins, saved 29 losses)
+ *   Dynamic maxClob:  ≥10%→0.82, ≥5%→0.75, ≥2%→0.58, <2%→0.38
+ *
  * Usage:
  *   node backtest.js [--days=90] [--asset=btc,eth,doge]
  */
@@ -16,12 +23,12 @@ const ASSETS    = ASSET_ARG ? ASSET_ARG.split(',') : ['btc', 'eth', 'doge'];
 const BINANCE_SYMBOLS = { btc: 'BTCUSDT', eth: 'ETHUSDT', doge: 'DOGEUSDT' };
 
 // ── Signal thresholds — exact match to live oracleLagArb.js ───────────────────
-const WINDOW_MIN_PCT     = 0.70;
-const SPIKE60_MIN_PCT    = 0.20;
-const SPIKE_MIN_PCT      = 0.20;
-const SPIKE_WINDOW_MIN   = 0.20;
-const ANTI_BOUNCE_THRESH = 0.25;
-const NET_TREND_THRESH   = 0.15;
+const WINDOW_MIN_PCT   = 0.70;   // PATH B window threshold
+const SPIKE60_MIN_PCT  = 0.20;   // PATH B spike requirement
+const SPIKE_MIN_PCT    = 0.20;   // PATH A spike threshold
+const SPIKE_WINDOW_MIN = 0.20;   // PATH A window requirement
+const LATE_WINDOW_MIN  = 0.35;   // PATH E window threshold
+const LATE_WINDOW_AGE  = 180;    // PATH E: signal at 3 min mark (seconds into window)
 
 // ── P&L / sizing ──────────────────────────────────────────────────────────────
 const CLOB_SCENARIOS = [0.29, 0.31, 0.33, 0.35, 0.37];
@@ -59,78 +66,109 @@ async function fetchAllKlines(symbol, startMs, endMs) {
   return map;
 }
 
+// ── Dynamic maxClobPrice — mirrors live oracleLagArb.js ──────────────────────
+function dynamicMaxClob(absPctWindow, path) {
+  if (path === 'LATE') return 0.82;
+  return absPctWindow >= 10.0 ? 0.82
+       : absPctWindow >= 5.0  ? 0.75
+       : absPctWindow >= 2.0  ? 0.58
+       : 0.38;
+}
+
+// ── P&L for a trade given CLOB entry and outcome ──────────────────────────────
+// Uses dynamic maxClob scenarios from signal magnitude
+function tradePnlDynamic(won, clobPrice) {
+  return won ? (BET_SIZE / clobPrice) * (1 - FEE_RATE) - BET_SIZE : -BET_SIZE;
+}
+
 // ── Signal simulation ──────────────────────────────────────────────────────────
+// Returns up to two signals per window: the first SPIKE/WINDOW signal (2-3 min)
+// and a LATE signal at 3 min mark if applicable.
 function simulateWindow(windowStartMs, klineMap) {
   const prior = klineMap.get(windowStartMs - 60000);
-  if (!prior) return null;
+  if (!prior) return [];
   const windowOpen = parseFloat(prior[4]);
 
   const resolutionCandle = klineMap.get(windowStartMs + 240000);
-  if (!resolutionCandle) return null;
+  if (!resolutionCandle) return [];
   const resolutionPrice = parseFloat(resolutionCandle[4]);
   const resolutionMove  = ((resolutionPrice - windowOpen) / windowOpen) * 100;
-  if (Math.abs(resolutionMove) < 0.03) return null;
+  if (Math.abs(resolutionMove) < 0.03) return [];
   const resolution = resolutionMove > 0 ? 'UP' : 'DOWN';
 
-  const checkTimes = [
-    windowStartMs + 120000,
-    windowStartMs + 180000,
-    windowStartMs + 240000,
-  ];
+  const results = [];
 
-  for (const ts of checkTimes) {
+  // ── PATH A / B — check at 2-3 min marks (90s gate satisfied) ─────────────
+  const earlyCheckTimes = [windowStartMs + 120000, windowStartMs + 180000];
+  for (const ts of earlyCheckTimes) {
     const candle = klineMap.get(ts);
     if (!candle) continue;
-    const curPrice = parseFloat(candle[4]);
+    const curPrice  = parseFloat(candle[4]);
     const pctWindow = ((curPrice - windowOpen) / windowOpen) * 100;
 
     const c1m = klineMap.get(ts - 60000);
     if (!c1m) continue;
     const spike60 = ((curPrice - parseFloat(c1m[4])) / parseFloat(c1m[4])) * 100;
+    const spikeDir60 = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
 
-    const c8m = klineMap.get(ts - 8 * 60000);
-    const c2m = klineMap.get(ts - 2 * 60000);
-    const move8m = c8m ? ((curPrice - parseFloat(c8m[4])) / parseFloat(c8m[4])) * 100 : null;
-    const move2m = c2m ? ((curPrice - parseFloat(c2m[4])) / parseFloat(c2m[4])) * 100 : null;
+    // Anti-bounce REMOVED from live code — simulate without it
+    const isSpike  = Math.abs(spike60) >= SPIKE_MIN_PCT  && Math.abs(pctWindow) >= SPIKE_WINDOW_MIN && spikeDir60;
+    const isWindow = Math.abs(pctWindow) >= WINDOW_MIN_PCT && Math.abs(spike60) >= SPIKE60_MIN_PCT && spikeDir60;
 
-    const priorContext = (move8m !== null && move2m !== null) ? move8m - move2m : null;
-    const netTrend8m  = move8m;
-    const spikeDir60  = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
+    if (!isSpike && !isWindow) continue;
 
-    const trendOpposes = netTrend8m !== null && (
-      spike60 > 0 ? netTrend8m < -NET_TREND_THRESH : netTrend8m > NET_TREND_THRESH
-    );
-    const antiBouncePasses = priorContext === null
-      ? !trendOpposes
-      : (spike60 > 0 ? priorContext >= -ANTI_BOUNCE_THRESH : priorContext <= ANTI_BOUNCE_THRESH) && !trendOpposes;
+    const path      = isWindow ? 'WINDOW' : 'SPIKE';
+    const direction = pctWindow > 0 ? 'UP' : 'DOWN';
+    const won       = direction === resolution;
+    const date      = new Date(ts);
 
-    const isWindow    = Math.abs(pctWindow) >= WINDOW_MIN_PCT && Math.abs(spike60) >= SPIKE60_MIN_PCT && spikeDir60 && antiBouncePasses;
-    const isSpike     = Math.abs(spike60) >= SPIKE_MIN_PCT    && Math.abs(pctWindow) >= SPIKE_WINDOW_MIN && spikeDir60 && antiBouncePasses;
-    const wouldFireRaw = (
-      (Math.abs(pctWindow) >= WINDOW_MIN_PCT && Math.abs(spike60) >= SPIKE60_MIN_PCT && spikeDir60) ||
-      (Math.abs(spike60)   >= SPIKE_MIN_PCT  && Math.abs(pctWindow) >= SPIKE_WINDOW_MIN && spikeDir60)
-    );
-
-    if (!isWindow && !isSpike && !wouldFireRaw) continue;
-
-    const direction      = pctWindow > 0 ? 'UP' : 'DOWN';
-    const won            = direction === resolution;
-    const blockedByFilter = !antiBouncePasses && wouldFireRaw;
-    const date           = new Date(ts);
-
-    return {
+    results.push({
       windowStart: windowStartMs, ts,
       minuteInWindow: (ts - windowStartMs) / 60000,
-      direction, pctWindow, spike60, priorContext, netTrend8m,
-      antiBouncePasses, isWindow, isSpike, blockedByFilter,
+      path, direction, pctWindow, spike60,
+      isWindow, isSpike,
       resolution, resolutionMove, won,
       utcHour: date.getUTCHours(),
-      utcDay:  date.getUTCDay(),   // 0=Sun … 6=Sat
-      month:   date.getUTCMonth(), // 0-based
+      utcDay:  date.getUTCDay(),
+      month:   date.getUTCMonth(),
       year:    date.getUTCFullYear(),
-    };
+    });
+    break; // take the earliest qualifying signal per window
   }
-  return null;
+
+  // ── PATH E (LATE CONVICTION) — check at exactly 3 min mark ───────────────
+  const lateTs = windowStartMs + LATE_WINDOW_AGE * 1000;
+  const lateCandle = klineMap.get(lateTs);
+  if (lateCandle) {
+    const curPrice  = parseFloat(lateCandle[4]);
+    const pctWindow = ((curPrice - windowOpen) / windowOpen) * 100;
+
+    const c1m = klineMap.get(lateTs - 60000);
+    if (c1m) {
+      const spike60    = ((curPrice - parseFloat(c1m[4])) / parseFloat(c1m[4])) * 100;
+      const spikeDir60 = (pctWindow > 0 && spike60 > 0) || (pctWindow < 0 && spike60 < 0);
+      const isLate     = Math.abs(pctWindow) >= LATE_WINDOW_MIN && spikeDir60;
+
+      if (isLate) {
+        const direction = pctWindow > 0 ? 'UP' : 'DOWN';
+        const won       = direction === resolution;
+        const date      = new Date(lateTs);
+        results.push({
+          windowStart: windowStartMs, ts: lateTs,
+          minuteInWindow: 3,
+          path: 'LATE', direction, pctWindow, spike60,
+          isWindow: false, isSpike: false,
+          resolution, resolutionMove, won,
+          utcHour: date.getUTCHours(),
+          utcDay:  date.getUTCDay(),
+          month:   date.getUTCMonth(),
+          year:    date.getUTCFullYear(),
+        });
+      }
+    }
+  }
+
+  return results;
 }
 
 // ── Reporting helpers ──────────────────────────────────────────────────────────
@@ -138,6 +176,29 @@ const div  = () => console.log('  ' + '─'.repeat(56));
 const hr   = () => console.log('='.repeat(66));
 const pct  = (n, d) => d ? (n / d * 100).toFixed(1) + '%' : 'n/a';
 const sign = v => (v >= 0 ? '+' : '') + '$' + Math.abs(v).toFixed(2);
+
+function reportLate(signals) {
+  if (!signals.length) { console.log('\nPATH E (LATE)\n  No signals.'); return; }
+  const wins = signals.filter(s => s.won).length;
+  const n    = signals.length;
+  console.log('\nPATH E (LATE CONVICTION) — 3+ min in, ≥ 0.35% confirmed move');
+  div();
+  console.log(`  Signals: ${n}  |  ${wins}W / ${n-wins}L  |  Win rate: ${pct(wins, n)}`);
+  console.log(`  Avg |window|: ${(signals.reduce((a,s)=>a+Math.abs(s.pctWindow),0)/n).toFixed(3)}%  |  Avg |resolution|: ${(signals.reduce((a,s)=>a+Math.abs(s.resolutionMove),0)/n).toFixed(3)}%`);
+  // LATE maxClobPrice is 0.82 — break-even WR = 0.82/(1-0.02) = 83.7%
+  const beWr = (0.82 / (1 - FEE_RATE) * 100).toFixed(1);
+  const ev82 = signals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.82), 0);
+  const ev68 = signals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.68), 0);
+  const ev55 = signals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.55), 0);
+  console.log(`\n  P&L by CLOB entry (bet=$${BET_SIZE}, BE-WR=${beWr}%):`);
+  console.log(`    CLOB=0.55: ${sign(ev55)}   CLOB=0.68: ${sign(ev68)}   CLOB=0.82: ${sign(ev82)}`);
+  for (const asset of ASSETS) {
+    const sub = signals.filter(s => s.asset === asset);
+    if (!sub.length) continue;
+    const w = sub.filter(s => s.won).length;
+    console.log(`    ${asset.toUpperCase().padEnd(5)}  ${String(sub.length).padStart(4)} signals  ${w}W/${sub.length-w}L  ${pct(w,sub.length).padStart(6)} WR`);
+  }
+}
 
 function reportGroup(label, signals) {
   if (!signals.length) { console.log(`\n${label}\n  No signals.`); return; }
@@ -160,12 +221,28 @@ function reportGroup(label, signals) {
   console.log(`  ${'CLOB'.padEnd(7)} ${'100% fill'.padEnd(13)} ${'80% fill'.padEnd(13)} ${'60% fill'.padEnd(13)} ${'40% fill'.padEnd(10)} EV/trade  BE-WR`);
   console.log(`  ${'─'.repeat(70)}`);
   for (const clob of CLOB_SCENARIOS) {
-    const full = signals.reduce((a, s) => a + tradePnl(s.won, clob), 0);
+    const full = signals.reduce((a, s) => a + tradePnlDynamic(s.won, clob), 0);
     const ev   = full / n;
     const beWr = (clob / (1 - FEE_RATE) * 100).toFixed(1);
     const flag = parseFloat(pct(wins,n)) > parseFloat(beWr) ? '✓' : '✗';
     const cols = FILL_RATES.map(fr => (sign(full * fr)).padEnd(13));
     console.log(`  ${String(clob).padEnd(7)} ${cols.join('')} ${sign(ev).padEnd(9)} ${beWr}% ${flag}`);
+  }
+
+  // Dynamic maxClob P&L tiers (signals bucketed by move magnitude)
+  const t38 = signals.filter(s => Math.abs(s.pctWindow) < 2.0);
+  const t58 = signals.filter(s => Math.abs(s.pctWindow) >= 2.0 && Math.abs(s.pctWindow) < 5.0);
+  const t75 = signals.filter(s => Math.abs(s.pctWindow) >= 5.0 && Math.abs(s.pctWindow) < 10.0);
+  const t82 = signals.filter(s => Math.abs(s.pctWindow) >= 10.0);
+  console.log(`\n  Dynamic maxClob tiers (live config — enter only when CLOB < threshold):`);
+  for (const [tier, cap, sigs] of [['<2% → max 0.38', 0.38, t38], ['≥2% → max 0.58', 0.58, t58], ['≥5% → max 0.75', 0.75, t75], ['≥10% → max 0.82', 0.82, t82]]) {
+    if (!sigs.length) continue;
+    const w   = sigs.filter(s => s.won).length;
+    const wr  = (w / sigs.length * 100).toFixed(1);
+    const ev  = (sigs.reduce((a, s) => a + tradePnlDynamic(s.won, cap * 0.85), 0) / sigs.length).toFixed(2); // assume fill at 85% of cap
+    const beW = (cap / (1 - FEE_RATE) * 100).toFixed(1);
+    const ok  = parseFloat(wr) > parseFloat(beW) ? '✓' : '✗';
+    console.log(`    ${tier.padEnd(18)}  ${String(sigs.length).padEnd(5)} sigs  ${w}W/${sigs.length-w}L  ${(wr+'%').padEnd(7)} WR  BE=${beW}%  EV/trade≈${sign(parseFloat(ev))} ${ok}`);
   }
 }
 
@@ -375,9 +452,10 @@ async function main() {
   console.log(`Period  : ${new Date(startMs).toISOString().slice(0,10)} → ${new Date(nowMs).toISOString().slice(0,10)}`);
   console.log(`Assets  : ${ASSETS.map(a => a.toUpperCase()).join(', ')}`);
   console.log(`Days    : ${DAYS_BACK}`);
-  console.log(`PATH B  : |pctWindow| ≥ ${WINDOW_MIN_PCT}% + |spike60| ≥ ${SPIKE60_MIN_PCT}% + anti-bounce ≤ ${ANTI_BOUNCE_THRESH}%`);
-  console.log(`PATH A  : |spike60| ≥ ${SPIKE_MIN_PCT}% + |pctWindow| ≥ ${SPIKE_WINDOW_MIN}%  [DISABLED LIVE]`);
-  console.log('Method  : Binance 1m klines, signal at 2-4 min mark, resolution at 5 min close');
+  console.log(`PATH B  : |pctWindow| ≥ ${WINDOW_MIN_PCT}% + |spike60| ≥ ${SPIKE60_MIN_PCT}% (anti-bounce REMOVED)`);
+  console.log(`PATH A  : |spike60| ≥ ${SPIKE_MIN_PCT}% + |pctWindow| ≥ ${SPIKE_WINDOW_MIN}%  [LIVE - re-enabled]`);
+  console.log(`PATH E  : 3+ min in, |window| ≥ ${LATE_WINDOW_MIN}%, spike60 agrees  [LATE CONVICTION]`);
+  console.log('Method  : Binance 1m klines, signal at 2-3 min mark, resolution at 5 min close');
 
   console.log('\n[1/2] Fetching Binance 1m klines...');
   const klineMaps = {};
@@ -387,9 +465,9 @@ async function main() {
   }
 
   console.log('\n[2/2] Simulating every 5-min window...');
-  const windowSignals  = [];
-  const spikeSignals   = [];
-  const blockedSignals = [];
+  const windowSignals = [];
+  const spikeSignals  = [];
+  const lateSignals   = [];
   let totalWindows = 0;
 
   for (const asset of ASSETS) {
@@ -399,14 +477,15 @@ async function main() {
     for (let winMs = firstWindow; winMs < nowMs - 300000; winMs += 300000) {
       totalWindows++;
       wc++;
-      const result = simulateWindow(winMs, klineMap);
-      if (!result) continue;
-      result.asset = asset;
-      if (result.blockedByFilter) blockedSignals.push(result);
-      else if (result.isWindow)   windowSignals.push(result);
-      else if (result.isSpike)    spikeSignals.push(result);
+      const results = simulateWindow(winMs, klineMap);
+      for (const result of results) {
+        result.asset = asset;
+        if (result.path === 'LATE')   lateSignals.push(result);
+        else if (result.isWindow)     windowSignals.push(result);
+        else if (result.isSpike)      spikeSignals.push(result);
+      }
     }
-    console.log(`  ${asset.toUpperCase()}: ${wc} windows → ${windowSignals.filter(s=>s.asset===asset).length} WINDOW, ${spikeSignals.filter(s=>s.asset===asset).length} SPIKE, ${blockedSignals.filter(s=>s.asset===asset).length} BLOCKED`);
+    console.log(`  ${asset.toUpperCase()}: ${wc} windows → ${windowSignals.filter(s=>s.asset===asset).length} WINDOW, ${spikeSignals.filter(s=>s.asset===asset).length} SPIKE, ${lateSignals.filter(s=>s.asset===asset).length} LATE`);
   }
 
   // ── Results ─────────────────────────────────────────────────────────────────
@@ -415,47 +494,19 @@ async function main() {
   console.log('='.repeat(66));
   console.log(`Total 5-min windows : ${totalWindows}`);
   console.log(`PATH B (WINDOW)     : ${windowSignals.length} signals  (${(windowSignals.length/totalWindows*100).toFixed(2)}% of windows, ${(windowSignals.length/DAYS_BACK).toFixed(1)}/day)`);
-  console.log(`PATH A (SPIKE)      : ${spikeSignals.length} signals  (${(spikeSignals.length/totalWindows*100).toFixed(2)}% of windows, ${(spikeSignals.length/DAYS_BACK).toFixed(1)}/day)  [DISABLED]`);
-  console.log(`Anti-bounce blocked : ${blockedSignals.length}`);
-  console.log(`Combined A+B (live) : ${windowSignals.length} → if SPIKE re-enabled: ${windowSignals.length + spikeSignals.length} (+${((spikeSignals.length/Math.max(1,windowSignals.length))*100).toFixed(0)}% volume)`);
+  console.log(`PATH A (SPIKE)      : ${spikeSignals.length} signals  (${(spikeSignals.length/totalWindows*100).toFixed(2)}% of windows, ${(spikeSignals.length/DAYS_BACK).toFixed(1)}/day)`);
+  console.log(`PATH E (LATE)       : ${lateSignals.length} signals  (${(lateSignals.length/totalWindows*100).toFixed(2)}% of windows, ${(lateSignals.length/DAYS_BACK).toFixed(1)}/day)`);
+  console.log(`All paths combined  : ${windowSignals.length + spikeSignals.length + lateSignals.length} signals  (${((windowSignals.length+spikeSignals.length+lateSignals.length)/DAYS_BACK).toFixed(1)}/day)`);
 
-  reportGroup('\nPATH B (WINDOW) — LIVE', windowSignals);
-  reportGroup('\nPATH A (SPIKE) — DISABLED', spikeSignals);
+  reportGroup('\nPATH B (WINDOW) — live threshold 0.70%', windowSignals);
+  reportGroup('\nPATH A (SPIKE)  — live threshold 0.20%', spikeSignals);
+  reportLate(lateSignals);
 
   // ── SPIKE magnitude segmentation ───────────────────────────────────────────
   console.log('\n' + '='.repeat(66));
-  console.log('SPIKE RE-ENABLE DECISION MATRIX');
+  console.log('SPIKE MAGNITUDE BUCKETS');
   console.log('='.repeat(66));
   reportSpikeBuckets(spikeSignals);
-  // Recommendation
-  const strong = spikeSignals.filter(s => Math.abs(s.spike60) >= 0.28);
-  const weak   = spikeSignals.filter(s => Math.abs(s.spike60) <  0.28);
-  if (strong.length && weak.length) {
-    const sWR = (strong.filter(s=>s.won).length/strong.length*100).toFixed(1);
-    const wWR = (weak.filter(s=>s.won).length/weak.length*100).toFixed(1);
-    const dropped = weak.length;
-    const retained = strong.length;
-    console.log(`\n  → If SPIKE floor raised to 0.28%: keep ${retained} signals (${sWR}% WR), drop ${dropped} weak (${wWR}% WR)`);
-    console.log(`    Recommended SPIKE floor: 0.28%  (re-enable after latency p99 confirmed <600ms)`);
-  }
-
-  // ── Anti-bounce ─────────────────────────────────────────────────────────────
-  console.log('\n' + '='.repeat(66));
-  console.log('ANTI-BOUNCE FILTER ANALYSIS');
-  console.log('='.repeat(66));
-  const totalCandidates = windowSignals.length + spikeSignals.length + blockedSignals.length;
-  if (blockedSignals.length > 0) {
-    const wouldWin  = blockedSignals.filter(s => s.direction === s.resolution).length;
-    const wouldLose = blockedSignals.length - wouldWin;
-    const saved     = wouldLose * BET_SIZE;
-    const cost      = wouldWin * tradePnl(true, 0.33);
-    const netImpact = saved - cost;
-    console.log(`  Candidates (before filter) : ${totalCandidates}`);
-    console.log(`  Blocked                    : ${blockedSignals.length} (${pct(blockedSignals.length, totalCandidates)})`);
-    console.log(`  Blocked WR                 : ${pct(wouldWin, blockedSignals.length)} would have won`);
-    console.log(`  Net P&L impact @CLOB=0.33  : ${sign(netImpact)} (saved ${wouldLose} losses, blocked ${wouldWin} wins)`);
-    console.log(`  Verdict: filter is ${netImpact >= 0 ? 'NET POSITIVE' : 'NET NEGATIVE'} over ${DAYS_BACK} days`);
-  }
 
   // ── Granular breakdowns ─────────────────────────────────────────────────────
   console.log('\n' + '='.repeat(66));
@@ -471,7 +522,7 @@ async function main() {
   console.log('\n' + '='.repeat(66));
   console.log('RISK ANALYSIS');
   console.log('='.repeat(66));
-  const allSorted = [...windowSignals].sort((a,b) => a.ts - b.ts);
+  const allSorted = [...windowSignals, ...spikeSignals].sort((a,b) => a.ts - b.ts);
   reportStreaks(allSorted);
   console.log('\nBalance simulation (start $100, 25% per trade, CLOB=0.33):');
   reportBalanceSimulation(allSorted);
@@ -482,9 +533,9 @@ async function main() {
   console.log('='.repeat(66));
   const winB  = windowSignals.filter(s=>s.won).length;
   const wrB   = (winB/Math.max(1,windowSignals.length)*100).toFixed(1);
-  const pnl33 = windowSignals.reduce((a,s) => a + tradePnl(s.won, 0.33), 0);
+  const pnl33 = windowSignals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.33), 0);
 
-  console.log(`\nPATH B only (current live config):`);
+  console.log(`\nPATH B only:`);
   console.log(`  ${(windowSignals.length/DAYS_BACK).toFixed(1)} signals/day | ${wrB}% WR | +${sign(pnl33/DAYS_BACK)}/day | +${sign(pnl33/DAYS_BACK*7)}/week (theoretical 100% fill)`);
 
   for (const fr of [0.80, 0.60]) {
@@ -494,21 +545,36 @@ async function main() {
   if (spikeSignals.length > 0) {
     const winA   = spikeSignals.filter(s=>s.won).length;
     const wrA    = (winA/spikeSignals.length*100).toFixed(1);
-    const pnlA33 = spikeSignals.reduce((a,s) => a + tradePnl(s.won, 0.33), 0);
+    const pnlA33 = spikeSignals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.33), 0);
     const combPnl = pnl33 + pnlA33;
-    console.log(`\nPATH A+B (if SPIKE re-enabled at 0.20% floor):`);
-    console.log(`  ${((windowSignals.length+spikeSignals.length)/DAYS_BACK).toFixed(1)} signals/day | combined +${sign(combPnl/DAYS_BACK)}/day (theoretical)`);
+    console.log(`\nPATH A+B combined (live):`);
+    console.log(`  ${((windowSignals.length+spikeSignals.length)/DAYS_BACK).toFixed(1)} signals/day | WINDOW ${wrB}% WR | SPIKE ${winA}/${spikeSignals.length}=${wrA}% WR | combined +${sign(combPnl/DAYS_BACK)}/day`);
     console.log(`  At 60% fill rate: +${sign(combPnl/DAYS_BACK*0.60)}/day`);
 
     const strongSpike = spikeSignals.filter(s => Math.abs(s.spike60) >= 0.28);
     if (strongSpike.length) {
-      const pnlStrong = strongSpike.reduce((a,s) => a + tradePnl(s.won, 0.33), 0);
+      const pnlStrong = strongSpike.reduce((a,s) => a + tradePnlDynamic(s.won, 0.33), 0);
       const combStrong = pnl33 + pnlStrong;
       console.log(`\nPATH A+B (SPIKE floor raised to 0.28%):`);
-      console.log(`  ${((windowSignals.length+strongSpike.length)/DAYS_BACK).toFixed(1)} signals/day | combined +${sign(combStrong/DAYS_BACK)}/day (theoretical)`);
+      console.log(`  ${((windowSignals.length+strongSpike.length)/DAYS_BACK).toFixed(1)} signals/day | combined +${sign(combStrong/DAYS_BACK)}/day`);
       console.log(`  At 60% fill rate: +${sign(combStrong/DAYS_BACK*0.60)}/day`);
     }
   }
+
+  if (lateSignals.length > 0) {
+    const winL  = lateSignals.filter(s=>s.won).length;
+    const wrL   = (winL/lateSignals.length*100).toFixed(1);
+    const pnlL  = lateSignals.reduce((a,s) => a + tradePnlDynamic(s.won, 0.68), 0); // typical LATE entry ~0.68
+    console.log(`\nPATH E (LATE) — avg CLOB entry ~0.68:`);
+    console.log(`  ${(lateSignals.length/DAYS_BACK).toFixed(1)} signals/day | ${wrL}% WR | +${sign(pnlL/DAYS_BACK)}/day`);
+    console.log(`  Note: 83.7% WR needed to break even at CLOB=0.82 (raised ceiling)`);
+  }
+
+  const totalCombPnl = [...windowSignals, ...spikeSignals, ...lateSignals]
+    .reduce((a,s) => a + tradePnlDynamic(s.won, s.path==='LATE' ? 0.68 : 0.33), 0);
+  console.log(`\nAll paths combined:`);
+  console.log(`  +${sign(totalCombPnl/DAYS_BACK)}/day (theoretical) | +${sign(totalCombPnl/DAYS_BACK*7)}/week`);
+  console.log(`  At 60% fill: +${sign(totalCombPnl/DAYS_BACK*0.60)}/day`);
 
   console.log('\n' + '='.repeat(66));
   console.log('LIMITATIONS');

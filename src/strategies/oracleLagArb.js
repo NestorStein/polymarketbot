@@ -14,7 +14,7 @@
  *  - CLOB prices tracked via Polymarket WebSocket (zero HTTP latency)
  *  - For 15m/4h markets: only enter in final 8 minutes (same oracle lag applies, far more liquidity)
  *  - Signal paths:
- *    PATH A (spike-led):  spike60 ≥ 0.20% + window ≥ 0.20% + no prior bounce → CLOB < 0.42
+ *    PATH A (spike-led):  spike60 ≥ 0.20% + window ≥ 0.20% → CLOB < 0.38  [RE-ENABLED: p99=497ms, 98.6% WR]
  *    PATH B (window-led): window ≥ 0.55% + spike60 ≥ 0.12% + no prior bounce → CLOB < 0.44
  *    PATH C (reversal):   CLOB stale >0.70 vs spot direction → buy cheap side, CLOB < 0.30-0.42
  *    PATH D (early):      spike15 ≥ 0.10% OR spike10 ≥ 0.08% → CLOB < 0.40, WS age < 1.5s
@@ -44,6 +44,16 @@ const ASSET_SYMBOL_MAP = {
   doge: 'DOGE',
 };
 
+// Asset+timeframe combos with confirmed zero edge — never trade, skip to reduce eval load.
+// Analysis of Apr 14 2026 (7,680 signals):
+//   btc-5m:  1,075 signals, 100% CLOB_OVER (avg 0.989) — MMs price BTC 5m instantly
+//   eth-5m:  1,951 signals, 100% CLOB_OVER (avg 0.989) — same
+//   btc-4h:     36 signals, 100% CLOB_FLOOR (avg 0.089) — never clears the 0.28 floor
+// btc-4h: CLOB floor issue (avg 0.089 — never clears 0.28 floor)
+// eth-4h/doge-4h: 4h window too long for REVERSAL logic — 2 losses confirmed Apr 26
+// btc-5m/eth-5m: MMs reprice instantly (100% CLOB_OVER)
+const DISABLED_COMBOS = new Set(['btc-5m', 'eth-5m', 'btc-4h', 'eth-4h', 'doge-4h']);
+
 class OracleLagArb extends EventEmitter {
   constructor(config, polyClient) {
     super();
@@ -65,10 +75,14 @@ class OracleLagArb extends EventEmitter {
     this.activePositions = 0;
     this.committedUsdc = 0;
     this.windowOpenPrices = new Map(); // symbol → price at start of current 5-min window
+    this.windowOpenPrices15m = new Map(); // symbol → price at start of current 15-min window
+    this.windowOpenTs15m = 0;            // last 15m boundary timestamp
     this.priceHistory = {};            // symbol → [{price, ts}] rolling 120s buffer
     this.lastEvalTs    = {};           // symbol → ts of last evaluation (move-triggered throttle)
     this.lastEvalPrice = {};           // symbol → price at last evaluation
-    this.fokCooldown   = {};           // conditionId → ts of last FOK failure (30s retry block)
+    this.fokCooldown      = {};         // conditionId → ts of last FOK failure (30s retry block)
+    this._nearMissCooldown = {};        // conditionId → ts of last near-miss alert (60s cooldown)
+    this._watchedPositions = [];        // [{conditionId, direction, entryPrice, size, market, path, symbol, ts}] for settlement polling
 
     // ── Risk tracking ──────────────────────────────────────────────────────────
     this.sessionPeak      = 0;         // highest balance seen this session (for drawdown calc)
@@ -79,6 +93,14 @@ class OracleLagArb extends EventEmitter {
 
     // ── WS health watchdog ─────────────────────────────────────────────────────
     this.lastBinanceTick  = 0;         // ms timestamp of last Binance aggTrade message
+    this._wsSuspended     = false;     // true when feed is 10–30s stale → block signal eval
+    this._wsSuspendAlerted = false;    // prevent repeated Telegram alerts during suspend window
+    this._freshTickCount  = 0;         // consecutive ticks since reconnect; signals resume at 3
+
+    // ── Loss recovery & protection ─────────────────────────────────────────────
+    this.dayWinCount      = 0;         // wins today (for consecutive loss tracking)
+    this.dayLossCount     = 0;         // losses today
+    this.consecutiveLosses = 0;        // streak of losses with no win in between
 
     // ── Cached balance (refreshed every 20s to avoid per-trade HTTP) ──────────
     this._cachedBalance   = null;      // USDC balance, null until first fetch
@@ -148,6 +170,7 @@ class OracleLagArb extends EventEmitter {
     setInterval(() => this._refreshBalance(), 20 * 1000);       // keep balance cache fresh
     this._scheduleWindowReset();
     this._startBinanceWatchdog();
+    setInterval(() => this._pollSettledPositions(), 30 * 1000); // check settlements every 30s
     console.log('[OracleLag] Started — watching BTC/ETH/DOGE Up or Down markets (5m + 15m + 4h) | SOL/XRP/BNB disabled');
     const mkts = [...this.markets.values()];
     tg.startupAlert({ balance: this._cachedBalance || 0, markets5m: mkts.filter(m => m._timeframe==='5m').length, markets15m: mkts.filter(m => m._timeframe==='15m').length, markets4h: mkts.filter(m => m._timeframe==='4h').length });
@@ -163,7 +186,18 @@ class OracleLagArb extends EventEmitter {
       for (const [symbol, data] of Object.entries(this.prices)) {
         if (data?.current) this.windowOpenPrices.set(symbol, data.current);
       }
-      console.log('[OracleLag] Window reset — new reference prices set for all symbols');
+      // Reset 15m reference at 15-minute boundaries (every 3rd 5m reset)
+      const now15 = Math.floor(Date.now() / 900000) * 900000;
+      if (now15 !== this.windowOpenTs15m) {
+        this.windowOpenTs15m = now15;
+        this.windowOpenPrices15m.clear();
+        for (const [symbol, data] of Object.entries(this.prices)) {
+          if (data?.current) this.windowOpenPrices15m.set(symbol, data.current);
+        }
+        console.log('[OracleLag] Window reset — 5m + 15m reference prices updated');
+      } else {
+        console.log('[OracleLag] Window reset — 5m reference prices updated');
+      }
       this._refreshCryptoMarkets().catch(() => {});
       let rapid = 0;
       const rapidId = setInterval(() => {
@@ -334,6 +368,22 @@ class OracleLagArb extends EventEmitter {
         if (!this.windowOpenPrices.has(symbol)) {
           this.windowOpenPrices.set(symbol, price);
         }
+        if (!this.windowOpenPrices15m.has(symbol)) {
+          this.windowOpenPrices15m.set(symbol, price);
+        }
+
+        // Post-reconnect warm-up: require 3 consecutive ticks before resuming signals
+        if (this._wsSuspended) {
+          this._freshTickCount++;
+          if (this._freshTickCount >= 3) {
+            this._wsSuspended      = false;
+            this._wsSuspendAlerted = false;
+            this._freshTickCount   = 0;
+            console.log('[OracleLag] Binance WS feed restored — resuming signal evaluation');
+            tg.send('✅ Binance feed restored — signals resumed.');
+          }
+          return; // don't evaluate until warm-up complete
+        }
 
         if (this.markets.size === 0) return;
 
@@ -360,18 +410,40 @@ class OracleLagArb extends EventEmitter {
     });
   }
 
-  /** Watchdog: if no Binance tick in >30s, force-reconnect the WS */
+  /**
+   * Watchdog — three states:
+   *  < 20s  → healthy (aggTrade can be slow during low-activity periods)
+   *  20–45s → SUSPEND signal evaluation, alert once via Telegram
+   *  > 45s  → force reconnect, reset warm-up counter
+   */
   _startBinanceWatchdog() {
     this.lastBinanceTick = Date.now(); // seed so we don't fire immediately on start
     setInterval(() => {
       if (!this.running) return;
       const silentMs = Date.now() - this.lastBinanceTick;
-      if (silentMs > 30_000) {
+
+      if (silentMs > 45_000) {
+        // State 3: force reconnect
         console.warn(`[OracleLag] Binance WS silent for ${Math.round(silentMs / 1000)}s — forcing reconnect`);
+        this._wsSuspended      = true;
+        this._wsSuspendAlerted = false; // allow fresh alert after reconnect restore
+        this._freshTickCount   = 0;
         try { this.ws?.terminate(); } catch { /* ignore */ }
         this._connectBinance();
+      } else if (silentMs > 20_000) {
+        // State 2: suspend — stale feed, don't trade
+        if (!this._wsSuspended) {
+          this._wsSuspended = true;
+          this._freshTickCount = 0;
+        }
+        if (!this._wsSuspendAlerted) {
+          this._wsSuspendAlerted = true;
+          console.warn(`[OracleLag] Binance WS stale ${Math.round(silentMs / 1000)}s — signals SUSPENDED`);
+          tg.send(`⚠️ Binance feed stale (${Math.round(silentMs / 1000)}s) — signals suspended until feed recovers.`);
+        }
       }
-    }, 15_000); // check every 15s
+      // < 20s: healthy, no action needed
+    }, 5_000); // check every 5s for tighter suspension detection
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -430,12 +502,14 @@ class OracleLagArb extends EventEmitter {
     const TIMEFRAMES = [
       { name: '5m',  intervalSec: 300,   lookAhead: 2 },
       { name: '15m', intervalSec: 900,   lookAhead: 1 },
+      { name: '1h',  intervalSec: 3600,  lookAhead: 0 },
       { name: '4h',  intervalSec: 14400, lookAhead: 0 },
     ];
 
     const fetches = [];
     for (const asset of Object.keys(ASSET_SYMBOL_MAP)) {
       for (const tf of TIMEFRAMES) {
+        if (DISABLED_COMBOS.has(`${asset}-${tf.name}`)) continue;
         const windowStart = Math.floor(nowSec / tf.intervalSec) * tf.intervalSec;
         for (let i = 0; i <= tf.lookAhead; i++) {
           const ts = windowStart + i * tf.intervalSec;
@@ -484,6 +558,9 @@ class OracleLagArb extends EventEmitter {
         if (!this.windowOpenPrices.has(symbol) && this.prices[symbol]) {
           this.windowOpenPrices.set(symbol, this.prices[symbol].current);
         }
+        if (!this.windowOpenPrices15m.has(symbol) && this.prices[symbol]) {
+          this.windowOpenPrices15m.set(symbol, this.prices[symbol].current);
+        }
       } catch { /* skip */ }
     }));
 
@@ -492,8 +569,9 @@ class OracleLagArb extends EventEmitter {
 
     const by5m  = [...this.markets.values()].filter(m => m._timeframe === '5m').length;
     const by15m = [...this.markets.values()].filter(m => m._timeframe === '15m').length;
+    const by1h  = [...this.markets.values()].filter(m => m._timeframe === '1h').length;
     const by4h  = [...this.markets.values()].filter(m => m._timeframe === '4h').length;
-    console.log(`[OracleLag] Tracking ${this.markets.size} markets (${by5m} 5m, ${by15m} 15m, ${by4h} 4h) | ${found} new`);
+    console.log(`[OracleLag] Tracking ${this.markets.size} markets (${by5m} 5m, ${by15m} 15m, ${by1h} 1h, ${by4h} 4h) | ${found} new`);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
@@ -502,6 +580,7 @@ class OracleLagArb extends EventEmitter {
 
   async _checkOpportunity(symbol, currentPrice) {
     if (!this.running || this.paused || !this._canTrade()) return;
+    if (this._wsSuspended) return; // Binance feed stale — don't act on stale prices
 
     // No time gate — signal filters (spike ≥0.25%, window ≥0.50%, reversal CLOB mismatch)
     // are strong enough to prevent bad trades during quiet hours. Markets run 24/7.
@@ -526,19 +605,40 @@ class OracleLagArb extends EventEmitter {
       const now = Date.now();
       if (market._startsAtMs && market._startsAtMs > now) return;
 
-      // For 15m and 4h markets: oracle lag only applies in the final 8 minutes.
+      // For 15m/1h/4h markets: oracle lag only applies in the final 8 minutes.
       // Before that, there's too much time left for the edge to survive.
       const timeframe = market._timeframe || '5m';
       if (timeframe !== '5m' && market._endsAtMs) {
         const msToExpiry = market._endsAtMs - now;
-        if (msToExpiry > 8 * 60 * 1000) return; // too early — check back later
+        if (msToExpiry > 8 * 60 * 1000) {
+          // Emit a lightweight 'waiting' tick so the dashboard shows the market exists
+          // Throttle to once per 10s per market to avoid flooding the UI
+          const waitKey = market.condition_id;
+          if (!this._waitingTickTs) this._waitingTickTs = {};
+          if (!this._waitingTickTs[waitKey] || now - this._waitingTickTs[waitKey] > 10000) {
+            this._waitingTickTs[waitKey] = now;
+            const pctWindow = ((spotPrice - (this.windowOpenPrices15m.get(symbol) || this.windowOpenPrices.get(symbol) || spotPrice)) / (this.windowOpenPrices15m.get(symbol) || this.windowOpenPrices.get(symbol) || spotPrice)) * 100;
+            this.emit('scan_tick', {
+              symbol, timeframe, path: '—', pctWindow, spike60: 0, spike15: 0, spike10: 0,
+              clobPrice: null, maxClobPrice: null, direction: null, status: 'waiting',
+              msLeft: msToExpiry, marketUrl: market.slug ? `https://polymarket.com/event/${market.slug}` : '',
+              marketSlug: market.slug || '',
+            });
+          }
+          return; // too early — check back later
+        }
       }
 
       const upToken   = market._upToken;
       const downToken = market._downToken;
 
-      // ── Window move (from 5-min boundary open) ────────────────────────────
-      const windowOpen = this.windowOpenPrices.get(symbol) || spotPrice;
+      // ── Window move — use correct reference for each timeframe ──────────────
+      // 5m markets: reference resets every 5 minutes (correct)
+      // 15m markets: reference resets every 15 minutes (was wrong — was using 5m ref)
+      const windowRef  = timeframe === '15m'
+        ? (this.windowOpenPrices15m.get(symbol) || this.windowOpenPrices.get(symbol) || spotPrice)
+        : (this.windowOpenPrices.get(symbol) || spotPrice);
+      const windowOpen = windowRef;
       const pctWindow  = ((spotPrice - windowOpen) / windowOpen) * 100;
 
       // ── Spike detection (synchronous, zero latency) ────────────────────────
@@ -570,13 +670,20 @@ class OracleLagArb extends EventEmitter {
 
       if (upClobAsk != null && downClobAsk != null) {
         // REVERSAL: CLOB strongly committed to one side but spot has moved opposite.
-        // Raised stale threshold to 0.70 (was 0.55) — reduces false reversals.
-        // Raised disagreement to 0.20% (was 0.12%) — only act on clear divergence.
-        if (upClobAsk > 0.70 && pctWindow < -0.20) {
+        // Thresholds tuned from live data (Apr 14-22 2026):
+        //   stale ≥ 0.70: lowered from 0.75 — ETH stales at 0.71 consistently and was being
+        //     excluded. At 0.70 we catch ETH reversals while still requiring meaningful CLOB bias.
+        //   window ≥ 0.12%: lowered from 0.15% — 5-day live scan showed no signals reaching
+        //     threshold on ranging days. 0.12% is still above noise floor.
+        //   spike60 ≥ 0.05%, same direction: confirms momentum is current, not residual.
+        const reversalWindowThresh = 0.12;
+        const reversalSpike60Min   = 0.05;
+        const reversalStaleThresh  = 0.70;
+        if (upClobAsk > reversalStaleThresh && pctWindow < -reversalWindowThresh && Math.abs(spike60) >= reversalSpike60Min && spike60 < 0) {
           isReversal = true;
           reversalDirection = 'DOWN';
           reversalStaleSidePrice = upClobAsk;
-        } else if (downClobAsk > 0.70 && pctWindow > 0.20) {
+        } else if (downClobAsk > reversalStaleThresh && pctWindow > reversalWindowThresh && Math.abs(spike60) >= reversalSpike60Min && spike60 > 0) {
           isReversal = true;
           reversalDirection = 'UP';
           reversalStaleSidePrice = downClobAsk;
@@ -593,23 +700,21 @@ class OracleLagArb extends EventEmitter {
       // wouldBeSpike is still computed and logged so we can evaluate from data later
       // whether re-enabling is justified. After 50+ REVERSAL trades, compare SPIKE
       // signal outcomes (from signal_log.json) against REVERSAL to make the call.
-      const wouldBeSpike = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.20 && spikeDir60 && windowAgeMs >= 90000;
-      const isSpikeLed   = false; // disabled pending latency p99 data
       // PATH B thresholds vary by timeframe:
       // 5m/15m: window ≥ 0.70% + spike60 ≥ 0.20%
+      // 1h: window ≥ 1.50% + spike60 ≥ 0.35% (bigger threshold — 1h moves are noisier)
       // 4h: window ≥ 1.00% + spike60 ≥ 0.35% (0.70% is noise over 4h)
-      const windowThresh  = timeframe === '4h' ? 1.00 : 0.70;
-      const spike60Thresh = timeframe === '4h' ? 0.35 : 0.20;
-      const isWindowLed   = Math.abs(pctWindow) >= windowThresh && Math.abs(spike60) >= spike60Thresh && spikeDir60 && windowAgeMs >= 90000;
-      // Log disabled SPIKE signals for future re-enable evaluation
-      if (wouldBeSpike && !isSpikeLed) {
-        const spikeDir = pctWindow > 0 ? 'UP' : 'DOWN';
-        const spikeToken = spikeDir === 'UP' ? upToken : downToken;
-        const spikeClobRaw = spikeDir === 'UP' ? upClobAsk : downClobAsk;
-        if (spikeClobRaw != null) {
-          this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path: 'SPIKE', enabled: false, direction: spikeDir, pctWindow, spike60, clobPrice: spikeClobRaw, maxClobPrice: 0.38, msLeft: market._endsAtMs - now, blocked_by: 'DISABLED', traded: false, tokenId: spikeToken.token_id });
-        }
-      }
+      // For non-5m markets the 8-min gate ensures we're always deep enough in the window,
+      // so skip the windowAgeMs >= 90000 check (it's a 5m concept and irrelevant here).
+      const windowThresh  = timeframe === '4h' ? 1.00 : timeframe === '1h' ? 1.50 : 0.70;
+      const spike60Thresh = timeframe === '4h' || timeframe === '1h' ? 0.35 : 0.20;
+      const windowAgeOk   = timeframe === '5m' ? windowAgeMs >= 60000 : true;
+      // SPIKE re-enabled: latency p99=497ms < 600ms threshold confirmed from 11 live trades.
+      // 90-day backtest: 3,140 signals, 98.6% WR, all spike magnitude buckets edge-positive.
+      // Floor: |spike60| ≥ 0.20% + |pctWindow| ≥ 0.20% (all buckets showed edge in backtest).
+      const isSpikeLed   = Math.abs(spike60) >= 0.20 && Math.abs(pctWindow) >= 0.20 && spikeDir60 && windowAgeOk;
+      const wouldBeSpike = isSpikeLed; // kept for path label logic
+      const isWindowLed   = Math.abs(pctWindow) >= windowThresh && Math.abs(spike60) >= spike60Thresh && spikeDir60 && windowAgeOk;
       // PATH D (EARLY): disabled — 0W/3L track record (-$24), all losses.
       // Early spikes fire before the window has enough price history to confirm direction.
       // SPIKE and WINDOW paths (which require ≥90s window age) have much better fill quality.
@@ -618,11 +723,26 @@ class OracleLagArb extends EventEmitter {
       const earlyAgree  = false;
       const isEarlySpike = false;
 
+      // PATH E (LATE CONVICTION): enter 3+ minutes into a 5m window when direction is confirmed.
+      // Source: top Polymarket whale trader analysis (487 trades, +$17,929, 91% WR by market):
+      //   - 85% of their trades enter at >180s with avg CLOB 0.58 → near-certain settlement
+      //   - They completely skip 60-180s (noise zone); our bot should too
+      //   - At 3min with ≥0.35% confirmed move, the direction resolves correctly ~75-80% of time
+      //   - Breakeven at CLOB 0.68: need 73% WR — lowered threshold helps in consolidation
+      //   - Window threshold lowered 0.50% → 0.35% to catch smaller confirmed moves in tight markets
+      // Only 5m markets: 15m/4h windows are too long for the "3min confirmation" logic to hold.
+      const isLateConviction = timeframe === '5m'
+        && windowAgeMs >= 180_000                   // ≥ 3 minutes in (120s left to settle)
+        && Math.abs(pctWindow) >= 0.35              // ≥ 0.35% confirmed directional move (was 0.50%)
+        && spikeDir60                               // 60s spike agrees — direction not reversing
+        && !isReversal;                             // reversal handles its own late logic
+
       // ── Multi-asset correlation filter ────────────────────────────────────────
       // If ≥4 assets are all moving the same direction (>0.15% window move), it's a
       // broad market pump/dump — market makers reprice everything simultaneously and the
       // oracle lag edge shrinks. Skip to avoid chasing efficient moves.
       const assetDir = pctWindow > 0 ? 1 : -1;
+      // Use 5m window reference for broad correlation (consistent cross-asset comparison)
       const broadMoveCount = [...this.windowOpenPrices.entries()].filter(([sym, wo]) => {
         const cur = this.prices[sym]?.current;
         if (!cur || !wo) return false;
@@ -640,7 +760,7 @@ class OracleLagArb extends EventEmitter {
       const displayDir      = isReversal ? reversalDirection : btcDirection;
       const displayClobRaw  = displayDir === 'UP' ? upClobAsk : downClobAsk;
       const displayClob     = displayClobRaw ?? 0.5;
-      const anySignal       = isReversal || isSpikeLed || isWindowLed || isEarlySpike;
+      const anySignal       = isReversal || isSpikeLed || isWindowLed || isEarlySpike || isLateConviction;
       const displayMax      = 0.42; // simplified for display
       const marketSlugEarly = market.slug || '';
       const marketUrlEarly  = marketSlugEarly ? `https://polymarket.com/event/${marketSlugEarly}` : '';
@@ -655,7 +775,7 @@ class OracleLagArb extends EventEmitter {
         timeframe,
       });
 
-      if (!isReversal && !isSpikeLed && !isWindowLed && !isEarlySpike) return;
+      if (!isReversal && !isSpikeLed && !isWindowLed && !isEarlySpike && !isLateConviction) return;
 
       // ── Determine final direction & target token ───────────────────────────
       const targetDirection = isReversal ? reversalDirection : btcDirection;
@@ -663,10 +783,11 @@ class OracleLagArb extends EventEmitter {
 
       // Build path label
       const pathParts = [];
-      if (isReversal)   pathParts.push('REVERSAL');
+      if (isReversal)        pathParts.push('REVERSAL');
       if (isEarlySpike && btcDirection === targetDirection) pathParts.push('EARLY');
       if (isSpikeLed   && btcDirection === targetDirection) pathParts.push('SPIKE');
       if (isWindowLed  && btcDirection === targetDirection) pathParts.push('WINDOW');
+      if (isLateConviction)  pathParts.push('LATE');
       const path = pathParts.join('+') || 'REVERSAL';
 
       // ── CLOB price for target token (0ms from cache) ──────────────────────
@@ -677,19 +798,47 @@ class OracleLagArb extends EventEmitter {
       const clobAgeMs    = clobCacheTs ? Date.now() - clobCacheTs : Infinity;
       const wsAge        = clobCacheTs ? `${(clobAgeMs / 1000).toFixed(1)}s ago` : 'HTTP';
 
-      // ── Max CLOB thresholds — data-driven from 13 resolved bets ────────────
-      // Observed win rates: <0.30=33%, 0.30-0.38=75%, 0.38-0.44=0%, >0.44=25%
-      // Hard cap at 0.38 — every bet above 0.38 has been net negative.
-      // REVERSAL gets slightly higher cap because target token is cheap side.
+      // ── Max CLOB thresholds ───────────────────────────────────────────────────
+      // REVERSAL:        buy the cheap side — cap scales with how wrong the stale side is
+      // LATE CONVICTION: raised 0.68→0.82 — backtest WR 85%, breakeven at 0.82 = 82% WR → +EV
+      //                  5-day live data showed LATE signals only appearing at CLOB 0.98-0.99:
+      //                  those are still blocked (0.82 cap). Catches the intermediate 0.68-0.82 range.
+      // SPIKE/WINDOW:    dynamic by move magnitude — very large moves have near-certain direction:
+      //   |window| ≥ 10%: cap 0.82 (need 82% WR — at 10%+ move, direction resolves >95%)
+      //   |window| ≥  5%: cap 0.75 (need 75% WR — at  5%+ move, direction resolves >90%)
+      //   |window| ≥  2%: cap 0.58 (need 58% WR — at  2%+ move, direction resolves >75%)
+      //   |window| <  2%: sub-tiers by |spike60| — stronger short-term spike = more lag remaining:
+      //     |spike60| ≥ 1.0%: cap 0.65 (strong 60s momentum, book still catching up)
+      //     |spike60| ≥ 0.50%: cap 0.50 (moderate spike, some lag expected)
+      //     base:             cap 0.38 (weak signal — strict filter)
+      const absPctWindow = Math.abs(pctWindow);
+      const absSpike60   = Math.abs(spike60);
       const maxClobPrice = isReversal
         ? (reversalStaleSidePrice > 0.85 ? 0.38 : reversalStaleSidePrice > 0.75 ? 0.32 : 0.26)
-        : 0.38;  // unified cap across EARLY/SPIKE/WINDOW — data shows 0%+ above this
+        : isLateConviction ? 0.82
+        : absPctWindow >= 10.0 ? 0.82
+        : absPctWindow >= 5.0  ? 0.75
+        : absPctWindow >= 2.0  ? 0.58
+        : absSpike60 >= 1.0    ? 0.65
+        : absSpike60 >= 0.50   ? 0.50
+        : 0.38;
 
-      // CLOB floor: 0W/4L below 0.20, 1W/2L at 0.20-0.25 — both buckets negative EV.
-      // Data from 31 trades: sweet spot is 0.28-0.38. Raise floor to 0.28.
-      if (clobPrice < 0.28) {
-        console.log(`[OracleLag] CLOB ${targetDirection}=${clobPrice.toFixed(3)} < 0.28 floor — skip`);
+      // CLOB floor: orders below 0.32 on SPIKE/WINDOW almost never fill (book too thin at low prices).
+      // Two confirmed unfilled cancels on DOGE SPIKE at 0.27-0.28 (Apr 25-26).
+      // REVERSAL buys the cheap side directly — low CLOB is the signal, keep 0.22/0.28 floor.
+      // LATE has its own floor check below.
+      const clobFloor = isReversal
+        ? (symbol === 'DOGE' ? 0.22 : 0.28)          // REVERSAL: low CLOB is the edge
+        : isLateConviction ? 0.28                      // LATE: handled separately below
+        : 0.32;                                        // SPIKE/WINDOW: below 0.32 = no book depth
+      if (clobPrice < clobFloor && !isLateConviction) {
+        console.log(`[OracleLag] CLOB ${targetDirection}=${clobPrice.toFixed(3)} < ${clobFloor} floor (${symbol}) — skip`);
         this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft: market._endsAtMs - Date.now(), blocked_by: 'CLOB_FLOOR', traded: false, tokenId: targetToken.token_id });
+        return;
+      }
+      if (isLateConviction && !isWindowLed && clobPrice < 0.40) {
+        console.log(`[OracleLag] LATE floor: CLOB ${targetDirection}=${clobPrice.toFixed(3)} < 0.40 at ${Math.round(windowAgeMs/1000)}s — move not reflected in book, skip`);
+        this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft: market._endsAtMs - Date.now(), blocked_by: 'LATE_FLOOR', traded: false, tokenId: targetToken.token_id });
         return;
       }
 
@@ -703,7 +852,11 @@ class OracleLagArb extends EventEmitter {
       // Previously msLeft was checked after scan_tick, causing dashboard to show 🔥 FIRE
       // even when the bot would immediately skip due to insufficient window time.
       const msLeft   = market._endsAtMs - now;
-      const tooLate  = msLeft < 45000;
+      // Per-timeframe minimum: 15m/4h need more runway than 5m.
+      // 15m: 200s — avoids entering when 80%+ of window has elapsed (low edge, high variance)
+      // 4h:  300s — avoids entering in the final 5 min of a 4h window
+      const minMsLeft = timeframe === '4h' ? 300_000 : timeframe === '15m' ? 200_000 : 45_000;
+      const tooLate   = msLeft < minMsLeft;
       const clobOver = clobPrice >= maxClobPrice;
       const scanStatus = (clobOver || tooLate) ? 'skip' : 'ready';
 
@@ -714,6 +867,14 @@ class OracleLagArb extends EventEmitter {
       if (clobOver) {
         console.log(`[OracleLag] CLOB at ${clobPrice.toFixed(3)} ≥ max ${maxClobPrice} — skip`);
         this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft, blocked_by: 'CLOB_OVER', traded: false, tokenId: targetToken.token_id });
+        // Near-miss alert: CLOB just slightly above threshold (within 0.06) — market is heating up
+        // Skip post-settlement noise (clob ≥ 0.90) and enforce 60s cooldown per market
+        const nearMissGap = clobPrice - maxClobPrice;
+        const lastNearMiss = this._nearMissCooldown[market.condition_id] || 0;
+        if (nearMissGap <= 0.06 && clobPrice < 0.90 && (Date.now() - lastNearMiss) > 60000) {
+          this._nearMissCooldown[market.condition_id] = Date.now();
+          tg.nearMissAlert({ symbol, direction: targetDirection, path, timeframe, clobPrice, maxClobPrice, pctWindow, msLeft });
+        }
         return;
       }
 
@@ -746,14 +907,36 @@ class OracleLagArb extends EventEmitter {
       // buys. Direction signal (99%+ win rate in backtest) is sufficient; speed is the edge.
       const finalPath = path;
 
+      // ── Window-reference plausibility cross-check ─────────────────────────────
+      // Given the Binance pctWindow move and time remaining, estimate the minimum
+      // probability P(direction) a well-informed market should price the token at.
+      // If the actual CLOB is far below that estimate (divergence > 0.45), the
+      // 15m windowRef is likely misaligned with the Polymarket oracle's snapshot
+      // price — meaning the "big move" we think we see may be measured from the
+      // wrong baseline.
+      // Seen on Apr 27 DOGE: pctWindow=-20% (ref misaligned) but CLOB DOWN=0.13
+      // for 90s → market correctly said UP, our ref was wrong.
+      // We still allow the trade (CLOB repricing is real), but warn loudly.
+      const _minutesLeft   = Math.max(0.5, msLeft / 60000);
+      const _sigmaRemain   = 0.020 * Math.sqrt(_minutesLeft);         // 2%/min vol estimate
+      const _z             = Math.abs(pctWindow) / _sigmaRemain;
+      const _expectedProb  = Math.min(0.97, 0.5 + 0.40 * Math.min(1, _z / 2.5));
+      const refDivergence  = parseFloat((_expectedProb - clobPrice).toFixed(3));
+      const refSuspect     = refDivergence > 0.45;
+
+      if (refSuspect) {
+        console.warn(`[OracleLag] ⚠ windowRef SUSPECT: pctWindow=${(pctWindow*100).toFixed(1)}% implies P(${targetDirection})≈${_expectedProb.toFixed(2)}, CLOB=${clobPrice.toFixed(3)} (divergence=${refDivergence}). 15m ref may be misaligned with oracle.`);
+      }
+
       console.log(`[OracleLag] *** OPPORTUNITY [${finalPath}]: ${question}`);
-      console.log(`            BUY ${targetDirection} @ ${clobPrice.toFixed(3)} (max=${maxClobPrice}) | ${(msLeft/1000).toFixed(0)}s left`);
+      console.log(`            BUY ${targetDirection} @ ${clobPrice.toFixed(3)} (max=${maxClobPrice}) | ${(msLeft/1000).toFixed(0)}s left${refSuspect ? ' ⚠ REF_SUSPECT' : ''}`);
 
       this.emit('opportunity', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
         symbol, spotPrice, windowOpen, pctMove: pctWindow, spike60, spike30, spike15, spike10, path: finalPath,
         direction: targetDirection, tokenId: targetToken.token_id, side: targetDirection,
         price: clobPrice, expectedEdge: (maxClobPrice - clobPrice).toFixed(3), msLeft,
+        refDivergence, refSuspect,
       });
 
       const signalTs = Date.now(); // ← latency measurement starts here
@@ -761,12 +944,13 @@ class OracleLagArb extends EventEmitter {
       // the remaining sync work below. By the time placeBuyOrder runs, the HTTP
       // calls are already done and createOrder only needs to sign locally.
       this.poly.prewarmOrder(targetToken.token_id);
-      this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path: finalPath, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft, blocked_by: null, traded: true, tokenId: targetToken.token_id });
+      this._logSignalEvent({ type: 'SIGNAL', symbol, timeframe, path: finalPath, enabled: true, direction: targetDirection, pctWindow, spike60, clobPrice, maxClobPrice, msLeft, blocked_by: null, traded: true, tokenId: targetToken.token_id, refDivergence, refSuspect });
       this.tradedMarkets.add(market.condition_id);
-      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null, isEarlyOnly, finalPath, signalTs);
+      await this._executeTrade(market, targetToken.token_id, clobPrice, targetDirection, question, pctWindow, isReversal ? reversalStaleSidePrice : null, isEarlyOnly, finalPath, signalTs, symbol, refDivergence, refSuspect);
 
     } catch (err) {
-      console.warn('[OracleLag] Evaluate error:', err.message);
+      console.error('[OracleLag] Evaluate error:', err.message);
+      console.error('[OracleLag] Stack:', String(err.stack || 'NO STACK').split('\n').slice(0,6).join(' | '));
     } finally {
       this.evaluatingMarkets.delete(cid);
     }
@@ -776,7 +960,7 @@ class OracleLagArb extends EventEmitter {
   // Trade execution
   // ─────────────────────────────────────────────────────────────────────────────
 
-  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5, reversalStalePrice = null, isEarlyOnly = false, path = '', signalTs = Date.now()) {
+  async _executeTrade(market, tokenId, price, direction, question, pctWindow = 0.5, reversalStalePrice = null, isEarlyOnly = false, path = '', signalTs = Date.now(), symbol = '', refDivergence = 0, refSuspect = false) {
     // Use cached balance (refreshed every 20s) — avoids HTTP round-trip before every order.
     // If cache is >60s stale, fetch fresh as a safety net.
     let balance = this._cachedBalance;
@@ -788,7 +972,7 @@ class OracleLagArb extends EventEmitter {
     const available = balance - reserve - this.committedUsdc;
     if (available < 5) {
       console.log(`[OracleLag] Balance too low ($${balance.toFixed(2)}) — skipping`);
-      this.tradedMarkets.delete(market.condition_id);
+      // Keep tradedMarkets set — balance won't recover within this market window
       return;
     }
 
@@ -806,10 +990,13 @@ class OracleLagArb extends EventEmitter {
         } catch { /* no signal log yet */ }
         tg.dailySummary({ date: this.dayString, tradeCount: this.dayTradeCount, maxTrades: this.config.maxDailyTrades || 3, balance, startBalance: this.dayStartBalance, signalCount });
       }
-      this.dayString       = todayStr;
-      this.dayStartBalance = balance;
-      this.dayTradeCount   = 0;
-      this.dayTradeString  = todayStr;
+      this.dayString         = todayStr;
+      this.dayStartBalance   = balance;
+      this.dayTradeCount     = 0;
+      this.dayWinCount       = 0;
+      this.dayLossCount      = 0;
+      this.consecutiveLosses = 0;
+      this.dayTradeString    = todayStr;
       this._persistDayState();
       console.log(`[OracleLag] New day (${todayStr}) — counters reset. Start balance: $${balance.toFixed(2)}`);
     }
@@ -819,7 +1006,6 @@ class OracleLagArb extends EventEmitter {
     const maxDailyTrades = this.config.maxDailyTrades || 3;
     if (this.dayTradeCount >= maxDailyTrades) {
       console.log(`[OracleLag] ⛔ DAILY CAP: ${this.dayTradeCount}/${maxDailyTrades} trades today — pausing until midnight`);
-      this.tradedMarkets.delete(market.condition_id);
       return;
     }
 
@@ -831,7 +1017,6 @@ class OracleLagArb extends EventEmitter {
       this.paused = true;
       this.emit('circuit_breaker', { reason: 'daily_loss', dailyLoss, maxDailyLoss, balance });
       tg.circuitBreakerAlert({ dailyLoss, maxDailyLoss, balance });
-      this.tradedMarkets.delete(market.condition_id);
       return;
     }
 
@@ -844,31 +1029,73 @@ class OracleLagArb extends EventEmitter {
       console.log(`[OracleLag] ⚠ Drawdown ${(drawdownPct*100).toFixed(1)}% (peak $${this.sessionPeak.toFixed(2)}→$${balance.toFixed(2)}) — sizing at ${(drawdownScale*100).toFixed(0)}%`);
     }
 
-    // ── CLOB-price-scaled sizing (data-driven from 28 trades) ─────────────────
-    // 0.30-0.38 zone: 67% win rate → bet 25% (sweet spot, most confident)
-    // 0.20-0.30 zone: 40% win rate, high payout → bet 15% (EV+, lower certainty)
-    // 0.15-0.20 zone: unknown, new floor → bet 12% (cautious)
-    // <0.15 zone:     blocked by floor check above
-    // Reversal: sized by how wrong the CLOB is (stale side strength)
-    const fraction = reversalStalePrice != null
-      ? (reversalStalePrice > 0.80 ? 0.25 : reversalStalePrice > 0.75 ? 0.18 : 0.12)
-      : price < 0.30 ? 0.15   // 0.25-0.30 zone — cautious, limited data
-      : price < 0.38 ? 0.25   // sweet spot (0.30-0.38) — 60% win rate, confident size
-      : 0.12;                  // above cap, shouldn't reach here
+    // ── Kelly sizing ──────────────────────────────────────────────────────────
+    // f* = (p*b - (1-p)) / b   where b = net odds = (1 - ask) / ask
+    // Quarter Kelly (f* * 0.25) — conservative until sufficient live data per path.
+    // Win rate p: rolling last 30 settled trades, filtered by path bucket.
+    //   REVERSAL: ~60 live trades, use observed rate. Min floor: 0.70 (conservative prior).
+    //   SPIKE:    0 live trades so far — use backtest rate 0.986 but cap bet at 5% of balance
+    //             until 50 live SPIKE trades accumulate. Earns right to size up with data.
+    //   LATE/WINDOW: use observed or fall back to backtest priors.
+    const isLate  = path.includes('LATE');
+    const isDoge  = symbol === 'DOGE';
+    const isSpike = path.includes('SPIKE') && !path.includes('REVERSAL') && !path.includes('WINDOW');
 
-    // Apply drawdown scale + absolute per-bet cap when balance is low
-    const balanceCap = balance < 30 ? 8 : balance < 40 ? 12 : this.config.maxPositionUsdc;
-    // 15m/4h markets get a tighter size cap: wider window = more time for adverse moves.
-    // Data: $27 loss on ETH 15m SPIKE was the single largest loss. Cap at $10 until win rate proven.
-    const timeframeCap = (market._timeframe && market._timeframe !== '5m') ? 10 : Infinity;
-    const size = Math.min(balanceCap, timeframeCap, available * fraction * drawdownScale);
-    if (size < 5) return;
+    const kellyWinRate = this._kellyWinRate(path, symbol);
+    const kellyB       = (1 - price) / price;           // net odds at entry price
+    const kellyF       = (kellyWinRate * kellyB - (1 - kellyWinRate)) / kellyB;
+    const kellyFull    = Math.max(0, kellyF);
+    const kellyQuarter = kellyFull * 0.25;
+
+    // Hard cap per-path until live data earns right to size up:
+    //   SPIKE: 5% until 50 live trades, then lifts to 10%
+    //     → when balance < $30, raise to 10% so Kelly * cap * available >= $2 min
+    //   REVERSAL/WINDOW: 10% (60+ live trades)
+    //   LATE: 8% (lower confidence, higher CLOB)
+    const liveSpikeTrades = this._liveTradeCount('SPIKE');
+    const lowBalance = balance < 45;  // raise SPIKE cap to 10% until balance recovers to $45
+    const pathCap = isSpike  ? (liveSpikeTrades >= 50 ? 0.10 : (lowBalance ? 0.10 : 0.05))
+                  : isLate   ? (lowBalance ? 0.10 : 0.08)
+                  : 0.10;
+
+    const fraction = Math.min(kellyQuarter, pathCap);
+    console.log(`[OracleLag] Kelly: p=${kellyWinRate.toFixed(3)} b=${kellyB.toFixed(3)} f*=${kellyFull.toFixed(3)} →¼Kelly=${kellyQuarter.toFixed(3)} cap=${pathCap} →fraction=${fraction.toFixed(3)} (${path} live_spike=${liveSpikeTrades})`);
+
+    // ── Consecutive loss guard — reduce sizing after 2 losses in a row ────────
+    const lossGuard = this.consecutiveLosses >= 2 ? 0.65 : 1.0;
+    if (lossGuard < 1.0) {
+      console.log(`[OracleLag] ⚠ Consecutive losses: ${this.consecutiveLosses} — sizing at 65%`);
+    }
+
+    // ── Balance floor — stop trading if balance drops below $55 (protects 70% of $80 starting capital)
+    if (balance < 55) {
+      console.log(`[OracleLag] ⛔ Balance $${balance.toFixed(2)} below floor $55 — capital protection active`);
+      return;
+    }
+
+    // Apply all scaling factors + absolute per-bet cap
+    // Hard cap at $5/bet until live win rate is confirmed across 20+ trades.
+    // High-CLOB entries (>0.70): profit margin per share is thin — keep at $5 hard cap.
+    // At CLOB=0.82 a $5 bet wins only $1.10 — need many wins to offset one loss.
+    const balanceCap = 5;
+    const timeframeCap = (market._timeframe && market._timeframe !== '5m')
+      ? (isDoge ? 15 : 10)
+      : Infinity;
+    const dailyPnl = balance - this.dayStartBalance;
+    const size = Math.min(balanceCap, timeframeCap, available * fraction * drawdownScale * lossGuard);
+    console.log(`[OracleLag] Sizing: bal=${balance.toFixed(2)} avail=${available.toFixed(2)} frac=${fraction.toFixed(3)} drawdown=${drawdownScale} loss=${lossGuard} balCap=${balanceCap} tfCap=${timeframeCap} → size=${size.toFixed(2)}`);
+    // Min trade $2 (was $5) — Kelly at low balance (~$26) produces $1-2 bets; $5 floor
+    // was silently blocking all signals. $2 is still meaningful (>7% of balance).
+    if (size < 2) return;
 
     this.committedUsdc += size;
     this.activePositions++;
     try {
       // ── Book depth check — ensure enough liquidity at our fill price ─────
-      const bidOffset = reversalStalePrice != null ? 0.08 : isEarlyOnly ? 0.05 : 0.07;
+      // Late-conviction entries are at high CLOB prices (0.45-0.68): tighter offset
+      // to avoid overpaying — AMM ASK is typically bid+0.01, so +0.03 is sufficient
+      const isLateExec = path.includes('LATE');
+      const bidOffset = reversalStalePrice != null ? 0.08 : isEarlyOnly ? 0.05 : isLateExec ? 0.03 : 0.07;
       const fillPrice = Math.min(parseFloat((price + bidOffset).toFixed(2)), 0.76);
       const sharesNeeded = Math.floor(size / price);
       const cachedAsks  = this.clobPrices[tokenId]?.asks || [];
@@ -880,7 +1107,7 @@ class OracleLagArb extends EventEmitter {
         console.log(`[OracleLag] Thin book: only ${depthShares.toFixed(0)} shares at ≤${fillPrice} (need ${sharesNeeded}) — skip`);
         this.committedUsdc = Math.max(0, this.committedUsdc - size);
         this.activePositions--;
-        this.tradedMarkets.delete(market.condition_id);
+        // Keep tradedMarkets set — book won't thicken instantly; prevents duplicate attempts
         return;
       }
       const submitTs = Date.now();
@@ -899,30 +1126,46 @@ class OracleLagArb extends EventEmitter {
         console.warn(`[OracleLag] GTC order rejected (${errMsg}) — skipping`);
         this.committedUsdc = Math.max(0, this.committedUsdc - size);
         this.activePositions--;
-        this.tradedMarkets.delete(market.condition_id);
+        // Keep tradedMarkets set — order was explicitly rejected; don't retry same market
         return;
       }
 
       // Track whether order was (partially) filled at placement time.
-      // takingAmount = USDC taken from our wallet. If > 0 at placement, tokens were received.
+      // takingAmount = outcome tokens received. If > 0 at placement, order partially/fully filled.
       const immediatelyFilled = parseFloat(order.takingAmount || '0') > 0;
 
       // Auto-cancel: cancel the GTC order before market closes so funds aren't locked.
       // Cancel 10s before market end, or after 55s max — whichever is sooner.
+      // REVERSAL + not immediately filled = AMM already repriced away from our cached price.
+      // Edge is gone — cancel in 5s rather than burning a trade slot for 55s.
       const msLeft      = market._endsAtMs ? market._endsAtMs - Date.now() : 60000;
-      const cancelAfter = Math.min(55000, Math.max(8000, msLeft - 10000));
+      const isReversal  = path.includes('REVERSAL');
+      const cancelAfter = (!immediatelyFilled && isReversal)
+        ? 5_000
+        : Math.min(55000, Math.max(8000, msLeft - 10000));
       console.log(`[OracleLag] GTC auto-cancel in ${(cancelAfter / 1000).toFixed(0)}s | immediatelyFilled=${immediatelyFilled}`);
 
       const slug = market.slug || '';
       const marketUrl = slug ? `https://polymarket.com/event/${slug}` : '';
 
+      // takingAmount = outcome tokens received (NOT USDC). usdcSpent = tokens * price.
+      const tokensReceived = parseFloat(order.takingAmount || '0');
+      const usdcSpent = tokensReceived > 0 ? tokensReceived * price : size;
+
       this._recordTrade();
       tg.tradeAlert({ symbol, direction, path, clobPrice: price, size, orderId: order.orderID, timeframe: market._timeframe || '5m' });
+      // Register for settlement polling — will fire WIN/LOSS Telegram alert when resolved
+      this._watchedPositions.push({
+        conditionId: market.condition_id, orderId: order.orderID,
+        direction, entryPrice: price, size: usdcSpent, tokensReceived,
+        market: question, path, symbol, ts: Date.now(),
+      });
       this.emit('trade_executed', {
         type: 'ORACLE_LAG', market: question, marketId: market.condition_id,
         slug, marketUrl,
         tokenId, side: direction, price, size, orderId: order.orderID, path, ts: Date.now(),
         latency: { signalToSubmitMs, submitToConfirmMs, totalMs: confirmTs - signalTs },
+        refDivergence, refSuspect,
       });
 
       setTimeout(async () => {
@@ -932,6 +1175,8 @@ class OracleLagArb extends EventEmitter {
           // If partially filled at placement (immediatelyFilled=true), tokens are in wallet — keep the log.
           if (!immediatelyFilled) {
             console.log(`[OracleLag] GTC order cancelled (unfilled): ${order.orderID}`);
+            // Remove from watched — no position was ever opened, nothing to settle
+            this._watchedPositions = this._watchedPositions.filter(p => p.orderId !== order.orderID);
             this.emit('trade_cancelled', { orderId: order.orderID, marketId: market.condition_id });
           } else {
             console.log(`[OracleLag] GTC order cancelled remainder (was partially filled): ${order.orderID}`);
@@ -949,9 +1194,92 @@ class OracleLagArb extends EventEmitter {
       console.error('[OracleLag] Trade failed:', msg.slice(0, 120));
       this.committedUsdc = Math.max(0, this.committedUsdc - size);
       this.activePositions--;
-      if (!msg.includes('balance') && !msg.includes('allowance')) {
-        this.tradedMarkets.delete(market.condition_id);
+      // Keep tradedMarkets set — prevents duplicate bets on same market if error was transient
+    }
+  }
+
+  async _pollSettledPositions() {
+    if (!this._watchedPositions.length) return;
+    // Drop positions older than 2 hours (should have settled by then)
+    const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+    this._watchedPositions = this._watchedPositions.filter(p => p.ts > cutoff);
+    if (!this._watchedPositions.length) return;
+
+    try {
+      const wallet = this.poly?.wallet?.address;
+      if (!wallet) return;
+      const res = await axios.get(
+        `https://data-api.polymarket.com/positions?user=${wallet}&sizeThreshold=.001&sortBy=CURRENT`,
+        { timeout: 8000 }
+      );
+      const apiPositions = res.data || [];
+      const byCondition = {};
+      for (const p of apiPositions) if (p.conditionId) byCondition[p.conditionId] = p;
+
+      const remaining = [];
+      for (const watched of this._watchedPositions) {
+        const pos = byCondition[watched.conditionId];
+        if (!pos) {
+          // Not in API yet — keep watching (API has ~30s lag)
+          remaining.push(watched);
+          continue;
+        }
+        const cur        = parseFloat(pos.curPrice ?? 0);
+        const redeemable = pos.redeemable === true;
+
+        if (redeemable && cur >= 0.99) {
+          // WIN: each token redeems for $1 USDC. profit = tokens*(1-price), gross = tokens*1.
+          const tokens = watched.tokensReceived || (watched.size / watched.entryPrice);
+          const pnl = tokens * (1 - watched.entryPrice);
+          console.log(`[OracleLag] Position settled WIN: ${watched.symbol} ${watched.direction} +$${pnl.toFixed(2)} (${tokens.toFixed(2)} tokens @ ${watched.entryPrice})`);
+          tg.positionSettledAlert({ symbol: watched.symbol, direction: watched.direction, path: watched.path, entryPrice: watched.entryPrice, size: watched.size, result: 'WIN', pnl, market: watched.market });
+          this._recordSettlement('WIN', pnl, watched);
+          this.dayWinCount++;
+          this.consecutiveLosses = 0; // reset streak on win
+          // Don't keep in remaining — done
+        } else if (redeemable && cur < 0.05) {
+          // LOSS: lose what was spent
+          const pnl = -watched.size;
+          console.log(`[OracleLag] Position settled LOSS: ${watched.symbol} ${watched.direction} -$${watched.size.toFixed(2)}`);
+          tg.positionSettledAlert({ symbol: watched.symbol, direction: watched.direction, path: watched.path, entryPrice: watched.entryPrice, size: watched.size, result: 'LOSS', pnl, market: watched.market });
+          this._recordSettlement('LOSS', pnl, watched);
+          this.dayLossCount++;
+          this.consecutiveLosses++;
+        } else {
+          // Still open — keep watching
+          remaining.push(watched);
+        }
       }
+      this._watchedPositions = remaining;
+    } catch { /* ignore — retry next interval */ }
+  }
+
+  /** Write WIN/LOSS result back into bet_log.json for the matching trade */
+  _recordSettlement(result, pnl, watched) {
+    const fs   = require('fs');
+    const path = require('path');
+    const logPath = path.join(__dirname, '..', '..', 'bet_log.json');
+    try {
+      const bets = JSON.parse(fs.readFileSync(logPath, 'utf8'));
+      // Match by conditionId (marketId) or by symbol+ts proximity (within 10min)
+      let matched = false;
+      for (const bet of bets) {
+        const sameMarket = bet.marketId === watched.conditionId;
+        const closeInTime = Math.abs((bet.ts || 0) - watched.ts) < 600000;
+        const sameSym = (bet.market || '').toLowerCase().includes(watched.symbol.toLowerCase());
+        if ((sameMarket || (closeInTime && sameSym)) && !bet.result) {
+          bet.result = result;
+          bet.pnl    = parseFloat(pnl.toFixed(4));
+          matched = true;
+          break;
+        }
+      }
+      if (matched) {
+        fs.writeFileSync(logPath, JSON.stringify(bets, null, 2));
+        console.log(`[OracleLag] bet_log updated: ${watched.symbol} ${result} pnl=$${pnl.toFixed(2)}`);
+      }
+    } catch (err) {
+      console.warn('[OracleLag] bet_log update failed:', err.message);
     }
   }
 
@@ -965,6 +1293,60 @@ class OracleLagArb extends EventEmitter {
     this.tradeTimestamps.push(Date.now());
     this.dayTradeCount++;
     console.log(`[OracleLag] Daily trade count: ${this.dayTradeCount}/${this.config.maxDailyTrades || 3}`);
+  }
+
+  /**
+   * Rolling win rate for Kelly sizing — last 30 settled trades, filtered by path bucket.
+   * Path buckets: 'REVERSAL', 'SPIKE', 'WINDOW', 'LATE', 'OTHER'
+   * Falls back to backtest priors when live sample is small (< 10 trades in bucket).
+   */
+  _kellyWinRate(path, symbol) {
+    // Priors updated Apr 22 2026: REVERSAL threshold lowered (0.75→0.70 stale) — prior kept
+    // conservative at 0.72 until live data builds. LATE prior reflects higher CLOB entries
+    // now allowed (up to 0.82) — lower prior 0.85→0.83 to account for reduced margin trades.
+    const PRIORS = { REVERSAL: 0.72, SPIKE: 0.986, WINDOW: 0.997, LATE: 0.83, OTHER: 0.70 };
+    const bucket = path.includes('REVERSAL') ? 'REVERSAL'
+                 : path.includes('SPIKE')    ? 'SPIKE'
+                 : path.includes('WINDOW')   ? 'WINDOW'
+                 : path.includes('LATE')     ? 'LATE'
+                 : 'OTHER';
+    try {
+      const fs = require('fs'), p = require('path');
+      const raw = fs.readFileSync(p.join(__dirname, '..', 'bet_log.json'), 'utf8');
+      const trades = JSON.parse(raw);
+      const settled = trades
+        .filter(t => (t.result === 'WIN' || t.result === 'LOSS') && t.path)
+        .filter(t => {
+          const b = t.path.includes('REVERSAL') ? 'REVERSAL'
+                  : t.path.includes('SPIKE')    ? 'SPIKE'
+                  : t.path.includes('WINDOW')   ? 'WINDOW'
+                  : t.path.includes('LATE')     ? 'LATE'
+                  : 'OTHER';
+          return b === bucket;
+        })
+        .slice(-30);
+      if (settled.length < 10) return PRIORS[bucket]; // not enough data — use prior
+      const wins = settled.filter(t => t.result === 'WIN').length;
+      // Blend observed rate with prior, weighted by sample size (full weight at 30+)
+      const weight = Math.min(settled.length, 30) / 30;
+      const observed = wins / settled.length;
+      return weight * observed + (1 - weight) * PRIORS[bucket];
+    } catch {
+      return PRIORS[bucket];
+    }
+  }
+
+  /** Count live settled trades for a given path bucket (for SPIKE cap logic). */
+  _liveTradeCount(bucket) {
+    try {
+      const fs = require('fs'), p = require('path');
+      const trades = JSON.parse(fs.readFileSync(p.join(__dirname, '..', 'bet_log.json'), 'utf8'));
+      return trades.filter(t =>
+        (t.result === 'WIN' || t.result === 'LOSS') &&
+        t.path && t.path.includes(bucket) &&
+        !t.path.includes('REVERSAL') && !t.path.includes('WINDOW')
+      ).length;
+    } catch { return 0; }
   }
 
   /**

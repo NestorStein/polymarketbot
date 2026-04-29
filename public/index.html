@@ -78,6 +78,7 @@
     }
     .ticker::-webkit-scrollbar { display:none; }
     .ti { display:flex; align-items:center; gap:6px; white-space:nowrap; }
+    .ti.inactive { opacity:0.35; }
     .ti-sym { font-size:11px; font-weight:600; color:var(--muted2); }
     .ti-price { font-size:12px; font-weight:600; font-variant-numeric:tabular-nums; }
     .ti-ch { font-size:11px; font-variant-numeric:tabular-nums; }
@@ -105,6 +106,7 @@
     .scard.p::before { background:linear-gradient(90deg,var(--purple),transparent); }
     .scard.y::before { background:linear-gradient(90deg,var(--yellow),transparent); }
     .scard.c::before { background:linear-gradient(90deg,var(--cyan),transparent); }
+    .scard.o::before { background:linear-gradient(90deg,var(--orange),transparent); }
     .slabel { font-size:10px; font-weight:500; text-transform:uppercase; letter-spacing:0.8px; color:var(--muted); margin-bottom:5px; }
     .sval   { font-size:22px; font-weight:700; line-height:1.1; letter-spacing:-0.5px; }
     .ssub   { font-size:11px; color:var(--muted2); margin-top:4px; }
@@ -130,18 +132,27 @@
     .pbadge.live { background:rgba(31,212,117,0.12); color:var(--green); border:1px solid rgba(31,212,117,0.25); }
     .pbadge.fire { background:rgba(245,192,48,0.15); color:var(--yellow); border:1px solid rgba(245,192,48,0.3); animation:blink .6s infinite alternate; }
 
-    /* ── SCAN GRID ── */
+    /* ── SCANNER GRID ── */
+    /* Dynamic — one cell per active market window, auto-layout */
     .scan-grid {
-      display:grid; grid-template-columns:repeat(5,1fr) 0.6fr; gap:1px; background:var(--border);
+      display:grid;
+      grid-template-columns:repeat(auto-fill, minmax(190px, 1fr));
+      gap:1px; background:var(--border);
+      min-height:60px;
+    }
+    .scan-empty {
+      padding:22px 18px; font-size:12px; color:var(--muted);
+      grid-column: 1/-1;
     }
     .sc {
-      background:var(--card2); padding:12px 14px;
+      background:var(--card2); padding:14px 16px;
       display:flex; flex-direction:column; gap:4px;
       transition:background .3s;
     }
     .sc.fire-bg { background:rgba(245,192,48,0.07); }
-    .sc-sym   { font-size:11px; font-weight:700; color:var(--muted2); letter-spacing:0.5px; }
-    .sc-win   { font-size:18px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; }
+    .sc-header { display:flex; align-items:center; gap:7px; margin-bottom:2px; }
+    .sc-sym   { font-size:12px; font-weight:700; color:var(--text); letter-spacing:0.3px; }
+    .sc-win   { font-size:22px; font-weight:700; font-variant-numeric:tabular-nums; line-height:1.1; }
     .sc-win.up   { color:var(--green); }
     .sc-win.dn   { color:var(--red); }
     .sc-win.flat { color:var(--muted2); }
@@ -157,6 +168,7 @@
     .sb-idle  { background:rgba(78,95,126,0.15); color:var(--muted); }
     .sb-skip  { background:rgba(255,63,94,0.12);  color:var(--red); }
     .sb-ready { background:rgba(245,192,48,0.2);  color:var(--yellow); animation:blink .5s infinite alternate; }
+    .sb-path  { background:rgba(63,128,255,0.15); color:var(--blue); }
     .sc-link  { font-size:9px; color:var(--muted); text-decoration:none; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .sc-link:hover { color:var(--blue); }
     .sc-link:empty { display:none; }
@@ -164,7 +176,6 @@
     .tf-badge { font-size:9px; font-weight:700; padding:1px 5px; border-radius:3px; letter-spacing:0.4px; text-transform:uppercase; }
     .tf-5m  { background:rgba(78,95,126,0.2);  color:var(--muted2); }
     .tf-15m { background:rgba(63,128,255,0.15); color:var(--blue); }
-    .tf-4h  { background:rgba(168,127,255,0.15); color:var(--purple); }
     .sc-mkt   { font-size:9px; color:var(--muted2); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; margin-top:1px; font-family:'JetBrains Mono',monospace; }
 
     /* ── TABLE ── */
@@ -187,14 +198,26 @@
     .b-yes  { background:rgba(31,212,117,0.1); color:var(--green); border:1px solid rgba(31,212,117,0.2); padding:1px 7px; border-radius:4px; font-size:10px; font-weight:600; }
     .b-no   { background:rgba(255,63,94,0.1);  color:var(--red);   border:1px solid rgba(255,63,94,0.2);  padding:1px 7px; border-radius:4px; font-size:10px; font-weight:600; }
 
+    .path-badge {
+      font-size:9px; font-weight:700; padding:2px 7px; border-radius:4px;
+      text-transform:uppercase; letter-spacing:0.4px; display:inline-block;
+    }
+    .path-REVERSAL  { background:rgba(168,127,255,0.15); color:var(--purple); }
+    .path-SPIKE     { background:rgba(245,192,48,0.15);  color:var(--yellow); }
+    .path-WINDOW    { background:rgba(0,207,200,0.15);   color:var(--cyan); }
+    .path-LATE      { background:rgba(63,128,255,0.15);  color:var(--blue); }
+    .path-OTHER     { background:rgba(78,95,126,0.15);   color:var(--muted2); }
+
     .status-win     { background:rgba(31,212,117,0.12); color:var(--green); border:1px solid rgba(31,212,117,0.3); display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.4px; }
     .status-lose    { background:rgba(255,63,94,0.12);  color:var(--red);   border:1px solid rgba(255,63,94,0.3);  display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.4px; }
     .status-pending { background:rgba(245,192,48,0.12); color:var(--yellow);border:1px solid rgba(245,192,48,0.3); display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.4px; }
+    .status-cancel  { background:rgba(78,95,126,0.12);  color:var(--muted2);border:1px solid rgba(78,95,126,0.3);  display:inline-flex;align-items:center;font-size:10px;font-weight:700;padding:2px 8px;border-radius:4px;text-transform:uppercase;letter-spacing:.4px; }
 
     .redeem-btn {
+      display:inline-block;
       background:rgba(31,212,117,0.1); border:1px solid rgba(31,212,117,0.3); color:var(--green);
       padding:3px 10px; border-radius:5px; cursor:pointer; font-size:11px; font-weight:600;
-      font-family:'Inter',sans-serif; transition:all .15s; white-space:nowrap;
+      font-family:'Inter',sans-serif; transition:all .15s; white-space:nowrap; text-decoration:none;
     }
     .redeem-btn:hover:not(:disabled) { background:rgba(31,212,117,0.22); }
     .redeem-btn:disabled { opacity:.55; cursor:default; }
@@ -240,7 +263,7 @@
     <div class="logo-icon">P</div>
     <div>
       <div class="logo-text">Polymarket Bot</div>
-      <div class="logo-sub">5m · 15m · 4h Oracle Lag</div>
+      <div class="logo-sub">Oracle Lag · 5m &amp; 15m · BTC ETH DOGE</div>
     </div>
   </div>
   <div class="nav-links">
@@ -257,24 +280,24 @@
   <button id="bot-toggle-btn" class="running" onclick="toggleBot()">⏸ Pause Bot</button>
 </header>
 
-<!-- TICKER -->
+<!-- TICKER: Active (BTC/ETH/DOGE) + inactive context (SOL/XRP/BNB dimmed) -->
 <div class="ticker">
   <div class="ti"><span class="ti-sym">BTC</span><span class="ti-price" id="p-BTC">—</span><span class="ti-ch" id="c-BTC">—</span><span class="ti-win flat" id="w-BTC">—</span></div>
   <div class="tdiv"></div>
   <div class="ti"><span class="ti-sym">ETH</span><span class="ti-price" id="p-ETH">—</span><span class="ti-ch" id="c-ETH">—</span><span class="ti-win flat" id="w-ETH">—</span></div>
   <div class="tdiv"></div>
-  <div class="ti"><span class="ti-sym">SOL</span><span class="ti-price" id="p-SOL">—</span><span class="ti-ch" id="c-SOL">—</span><span class="ti-win flat" id="w-SOL">—</span></div>
-  <div class="tdiv"></div>
-  <div class="ti"><span class="ti-sym">BNB</span><span class="ti-price" id="p-BNB">—</span><span class="ti-ch" id="c-BNB">—</span><span class="ti-win flat" id="w-BNB">—</span></div>
-  <div class="tdiv"></div>
-  <div class="ti"><span class="ti-sym">XRP</span><span class="ti-price" id="p-XRP">—</span><span class="ti-ch" id="c-XRP">—</span><span class="ti-win flat" id="w-XRP">—</span></div>
-  <div class="tdiv"></div>
   <div class="ti"><span class="ti-sym">DOGE</span><span class="ti-price" id="p-DOGE">—</span><span class="ti-ch" id="c-DOGE">—</span><span class="ti-win flat" id="w-DOGE">—</span></div>
+  <div class="tdiv"></div>
+  <div class="ti inactive"><span class="ti-sym">SOL</span><span class="ti-price" id="p-SOL">—</span><span class="ti-ch" id="c-SOL">—</span></div>
+  <div class="tdiv"></div>
+  <div class="ti inactive"><span class="ti-sym">XRP</span><span class="ti-price" id="p-XRP">—</span><span class="ti-ch" id="c-XRP">—</span></div>
+  <div class="tdiv"></div>
+  <div class="ti inactive"><span class="ti-sym">BNB</span><span class="ti-price" id="p-BNB">—</span><span class="ti-ch" id="c-BNB">—</span></div>
 </div>
 
 <div class="main">
 
-  <!-- STATS -->
+  <!-- STATS ROW -->
   <div class="stats-row">
     <div class="scard g">
       <div class="slabel">Portfolio Value <span style="font-size:10px;color:var(--muted);cursor:pointer" onclick="refreshBalance()" title="Refresh balance">↻</span></div>
@@ -282,7 +305,7 @@
       <div class="ssub" id="stat-start">USDC: $— | Pos: $—</div>
     </div>
     <div class="scard b">
-      <div class="slabel">Realized P&L</div>
+      <div class="slabel">Realized P&amp;L</div>
       <div class="sval" id="stat-pnl">$0.00</div>
       <div class="ssub" id="stat-roi">0.00% ROI</div>
     </div>
@@ -296,106 +319,43 @@
       <div class="sval" id="stat-winrate">—</div>
       <div class="ssub" id="stat-winloss">0W / 0L</div>
     </div>
-    <div class="scard c">
-      <div class="slabel">Trades Fired</div>
-      <div class="sval" id="stat-trades">0</div>
-      <div class="ssub" id="stat-opps">0 signals found</div>
+    <div class="scard o">
+      <div class="slabel">Today</div>
+      <div class="sval" id="stat-today">0/8</div>
+      <div class="ssub" id="stat-today-pnl">Day P&amp;L: $—</div>
     </div>
   </div>
 
-  <!-- LIVE SCANNER -->
+  <!-- LIVE SCANNER: 4 active combos -->
   <div class="panel">
     <div class="ph">
-      <div class="pt"><span class="ic">⚡</span> Live Signal Scanner <span id="markets-count" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px"></span></div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <span id="window-countdown" style="font-size:11px;color:var(--muted2);font-family:'JetBrains Mono',monospace">—</span>
+      <div class="pt">
+        <span class="ic">⚡</span> Live Signal Scanner
+        <span id="markets-count" style="font-size:10px;color:var(--muted);font-weight:400;text-transform:none;letter-spacing:0;margin-left:4px"></span>
+      </div>
+      <div style="display:flex;align-items:center;gap:12px">
+        <span id="window-countdown-5m" style="font-size:11px;color:var(--muted2);font-family:'JetBrains Mono',monospace">—</span>
+        <span id="window-countdown-15m" style="font-size:11px;color:var(--blue);font-family:'JetBrains Mono',monospace">—</span>
         <span class="pbadge" id="scan-badge">Waiting…</span>
       </div>
     </div>
-    <div class="scan-grid">
-      <div class="sc" id="sc-BTC">
-        <div class="sc-sym">BTC</div>
-        <div class="sc-win flat" id="scw-BTC">—</div>
-        <div class="sc-spike" id="scs-BTC">spike —</div>
-        <div class="sc-clob bad" id="scc-BTC">CLOB —</div>
-        <div class="sc-row">
-          <span class="tf-badge tf-5m" id="sct-BTC">5m</span>
-          <div class="sc-badge sb-idle" id="scb-BTC">IDLE</div>
-          <div class="sc-age" id="sca-BTC"></div>
-        </div>
-        <div class="sc-mkt" id="scm-BTC"></div>
-        <a class="sc-link" id="scl-BTC" href="#" target="_blank"></a>
-      </div>
-      <div class="sc" id="sc-ETH">
-        <div class="sc-sym">ETH</div>
-        <div class="sc-win flat" id="scw-ETH">—</div>
-        <div class="sc-spike" id="scs-ETH">spike —</div>
-        <div class="sc-clob bad" id="scc-ETH">CLOB —</div>
-        <div class="sc-row">
-          <span class="tf-badge tf-5m" id="sct-ETH">5m</span>
-          <div class="sc-badge sb-idle" id="scb-ETH">IDLE</div>
-          <div class="sc-age" id="sca-ETH"></div>
-        </div>
-        <div class="sc-mkt" id="scm-ETH"></div>
-        <a class="sc-link" id="scl-ETH" href="#" target="_blank"></a>
-      </div>
-      <div class="sc" id="sc-SOL" style="opacity:0.3;pointer-events:none">
-        <div class="sc-sym" style="text-decoration:line-through">SOL</div>
-        <div style="font-size:10px;color:var(--muted);margin-top:4px">Disabled</div>
-        <div style="font-size:9px;color:var(--muted);margin-top:2px">1W/7L · 13% win rate</div>
-      </div>
-      <div class="sc" id="sc-XRP">
-        <div class="sc-sym">XRP</div>
-        <div class="sc-win flat" id="scw-XRP">—</div>
-        <div class="sc-spike" id="scs-XRP">spike —</div>
-        <div class="sc-clob bad" id="scc-XRP">CLOB —</div>
-        <div class="sc-row">
-          <span class="tf-badge tf-5m" id="sct-XRP">5m</span>
-          <div class="sc-badge sb-idle" id="scb-XRP">IDLE</div>
-          <div class="sc-age" id="sca-XRP"></div>
-        </div>
-        <div class="sc-mkt" id="scm-XRP"></div>
-        <a class="sc-link" id="scl-XRP" href="#" target="_blank"></a>
-      </div>
-      <div class="sc" id="sc-BNB">
-        <div class="sc-sym">BNB</div>
-        <div class="sc-win flat" id="scw-BNB">—</div>
-        <div class="sc-spike" id="scs-BNB">spike —</div>
-        <div class="sc-clob bad" id="scc-BNB">CLOB —</div>
-        <div class="sc-row">
-          <span class="tf-badge tf-5m" id="sct-BNB">5m</span>
-          <div class="sc-badge sb-idle" id="scb-BNB">IDLE</div>
-          <div class="sc-age" id="sca-BNB"></div>
-        </div>
-        <div class="sc-mkt" id="scm-BNB"></div>
-        <a class="sc-link" id="scl-BNB" href="#" target="_blank"></a>
-      </div>
-      <div class="sc" id="sc-DOGE">
-        <div class="sc-sym">DOGE</div>
-        <div class="sc-win flat" id="scw-DOGE">—</div>
-        <div class="sc-spike" id="scs-DOGE">spike —</div>
-        <div class="sc-clob bad" id="scc-DOGE">CLOB —</div>
-        <div class="sc-row">
-          <span class="tf-badge tf-5m" id="sct-DOGE">5m</span>
-          <div class="sc-badge sb-idle" id="scb-DOGE">IDLE</div>
-          <div class="sc-age" id="sca-DOGE"></div>
-        </div>
-        <div class="sc-mkt" id="scm-DOGE"></div>
-        <a class="sc-link" id="scl-DOGE" href="#" target="_blank"></a>
-      </div>
+
+    <!-- Dynamic: one cell per active market window, keyed by marketSlug -->
+    <div id="scan-grid" class="scan-grid">
+      <div class="scan-empty">Waiting for bot to start…</div>
     </div>
-    <!-- Scanner help text -->
+
     <div style="padding:8px 16px;border-top:1px solid var(--border);display:flex;gap:20px;font-size:10px;color:var(--muted);flex-wrap:wrap">
-      <span>Window %: price move since last 5-min reset</span>
+      <span>Window %: price move since window open (5m ref for 5m, 15m ref for 15m)</span>
       <span>Spike: move in last 60s</span>
       <span style="color:var(--green)">CLOB green = below cap (oracle lag present)</span>
-      <span style="color:var(--red)">CLOB red = market repriced</span>
+      <span style="color:var(--red)">CLOB red = market repriced (no edge)</span>
       <span style="color:var(--yellow)">🔥 FIRE = order placing</span>
-      <span><span style="color:var(--muted2)">5m</span> / <span style="color:var(--blue)">15m</span> / <span style="color:var(--purple)">4h</span> = timeframe being scanned</span>
+      <span>Paths: <span style="color:var(--purple)">REVERSAL</span> · <span style="color:var(--yellow)">SPIKE</span> · <span style="color:var(--cyan)">WINDOW</span> · <span style="color:var(--blue)">LATE</span></span>
     </div>
   </div>
 
-  <!-- BETTED POSITIONS -->
+  <!-- LIVE POSITIONS -->
   <div class="panel">
     <div class="ph">
       <div class="pt"><span class="ic">🎯</span> Live Positions</div>
@@ -406,12 +366,28 @@
     </div>
     <div class="scroll-box" style="max-height:280px">
       <table class="dt">
-        <thead><tr><th>Market</th><th>Side</th><th>Cost</th><th>Price</th><th>Status</th><th>P&L</th><th>Action</th></tr></thead>
+        <thead><tr><th>Market</th><th>Side</th><th>Cost</th><th>Price</th><th>Status</th><th>P&amp;L</th><th>Action</th></tr></thead>
         <tbody id="pos-table"><tr class="erow"><td colspan="7">Loading positions…</td></tr></tbody>
       </table>
     </div>
   </div>
 
+  <!-- RECENT BETS -->
+  <div class="panel">
+    <div class="ph">
+      <div class="pt"><span class="ic">📒</span> Recent Bets</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <span class="pbadge" id="bets-count">—</span>
+        <button onclick="fetchBetLog()" style="background:none;border:1px solid var(--border2);color:var(--muted2);cursor:pointer;font-size:10px;padding:2px 8px;border-radius:4px;font-family:'Inter',sans-serif;">↻ Refresh</button>
+      </div>
+    </div>
+    <div class="scroll-box" style="max-height:300px">
+      <table class="dt">
+        <thead><tr><th>Time</th><th>Market</th><th>Path</th><th>Side</th><th>Entry</th><th>Size</th><th>Latency</th><th>Result</th><th>P&amp;L</th></tr></thead>
+        <tbody id="bets-table"><tr class="erow"><td colspan="9">Loading…</td></tr></tbody>
+      </table>
+    </div>
+  </div>
 
   <!-- ACTIVITY LOG -->
   <div class="panel">
@@ -446,54 +422,56 @@
 <script>
 const socket = io();
 let windowPrices = {};
-let scanTs = {};  // symbol → last scan timestamp
+// scanTs: marketSlug → { ts, symbol, timeframe, msLeft }
+const scanTs = {};
 let lastUsdcBalance = 0;
 
-// Clock
+// Symbol sort order for grid layout
+const SYM_ORDER = { BTC:0, ETH:1, DOGE:2 };
+const TF_ORDER  = { '15m':0, '5m':1, '1h':2, '4h':3 };
+
+// Clock + countdowns
 setInterval(() => {
   document.getElementById('clock').textContent = new Date().toLocaleTimeString();
   updateScanAges();
-  updateWindowCountdown();
+  updateWindowCountdowns();
 }, 1000);
 
-// Next 5-min boundary countdown
-let nextWindowTs = 0;
-function updateWindowCountdown() {
-  const now = Date.now();
-  if (!nextWindowTs || now > nextWindowTs) {
-    // Calculate next UTC 5-min boundary
-    const ms5 = 5 * 60 * 1000;
-    nextWindowTs = Math.ceil(now / ms5) * ms5;
-  }
-  const secs = Math.max(0, Math.floor((nextWindowTs - Date.now()) / 1000));
-  const m = Math.floor(secs / 60), s = secs % 60;
-  document.getElementById('window-countdown').textContent =
-    'Next window: ' + m + ':' + String(s).padStart(2,'0');
+function updateWindowCountdowns() {
+  const now  = Date.now();
+  const ms5  = 5  * 60 * 1000;
+  const ms15 = 15 * 60 * 1000;
+  const next5  = Math.ceil(now / ms5)  * ms5;
+  const next15 = Math.ceil(now / ms15) * ms15;
+  const secs5  = Math.max(0, Math.floor((next5  - now) / 1000));
+  const secs15 = Math.max(0, Math.floor((next15 - now) / 1000));
+  const fmt = s => Math.floor(s/60) + ':' + String(s%60).padStart(2,'0');
+  document.getElementById('window-countdown-5m' ).textContent = '5m: '  + fmt(secs5);
+  document.getElementById('window-countdown-15m').textContent = '15m: ' + fmt(secs15);
+}
+
+function slugToCellId(slug) {
+  return 'sc-' + slug.replace(/[^a-zA-Z0-9]/g, '-');
 }
 
 function updateScanAges() {
-  for (const [sym, ts] of Object.entries(scanTs)) {
-    const el = document.getElementById('sca-' + sym);
-    if (el) {
-      const age = Math.floor((Date.now() - ts) / 1000);
-      el.textContent = age < 3 ? 'now' : age + 's ago';
+  const now = Date.now();
+  let anyFire = false;
+  for (const [slug, info] of Object.entries(scanTs)) {
+    const cellId = slugToCellId(slug);
+    const cell   = document.getElementById(cellId);
+    if (!cell) continue;
+    const age = Math.floor((now - info.ts) / 1000);
+    const ageEl = cell.querySelector('.sc-age-val');
+    if (ageEl) ageEl.textContent = age < 3 ? 'now' : age + 's';
+    // Reset FIRE badge after 15s stale
+    const bEl = cell.querySelector('.sc-status-badge');
+    if (age > 15 && bEl && bEl.textContent === '🔥 FIRE!') {
+      bEl.textContent = 'IDLE'; bEl.className = 'sc-badge sb-idle';
+      cell.className = 'sc';
     }
-    // Reset FIRE badge to IDLE after 15s of no scan_tick for this symbol
-    const age = Date.now() - ts;
-    if (age > 15000) {
-      const bEl  = document.getElementById('scb-' + sym);
-      const cell = document.getElementById('sc-' + sym);
-      if (bEl && bEl.textContent === '🔥 FIRE!') {
-        bEl.textContent = 'IDLE'; bEl.className = 'sc-badge sb-idle';
-        if (cell) cell.className = 'sc';
-      }
-    }
+    if (bEl && bEl.textContent === '🔥 FIRE!') anyFire = true;
   }
-  // Reset scan badge to Live if no fires active
-  const anyFire = Object.keys(scanTs).some(sym => {
-    const bEl = document.getElementById('scb-' + sym);
-    return bEl && bEl.textContent === '🔥 FIRE!';
-  });
   if (!anyFire) {
     const sb = document.getElementById('scan-badge');
     if (sb && sb.textContent === '🔥 FIRING') {
@@ -502,92 +480,186 @@ function updateScanAges() {
   }
 }
 
-socket.on('connect',     () => socket.emit('request_state'));
+// Remove cells for markets that haven't been seen in 2 min (expired)
+function pruneExpiredCells() {
+  const now = Date.now();
+  const grid = document.getElementById('scan-grid');
+  for (const [slug, info] of Object.entries(scanTs)) {
+    if (now - info.ts > 120_000) {
+      const cell = document.getElementById(slugToCellId(slug));
+      if (cell) cell.remove();
+      delete scanTs[slug];
+    }
+  }
+  // Show placeholder if grid empty
+  if (grid && !grid.querySelector('.sc')) {
+    if (!grid.querySelector('.scan-empty')) {
+      grid.innerHTML = '<div class="scan-empty">No active markets — bot may be stopped</div>';
+    }
+  }
+}
+setInterval(pruneExpiredCells, 30_000);
+
+socket.on('connect', () => {
+  socket.emit('request_state');
+  setBotOnline();
+});
+socket.on('disconnect', () => setBotOffline());
+socket.on('connect_error', () => setBotOffline());
 socket.on('state',       applyState);
 socket.on('log',         appendLog);
 socket.on('prices',      updatePrices);
 socket.on('oracle_scan', updateScanCell);
-socket.on('arb_found',   () => {});  // handled via state
+socket.on('arb_found',   () => {});
 socket.on('signal',      () => {});
-socket.on('trade',       t => { fetchPositions(); refreshBalance(); appendLog({ msg: `TRADE: ${t.side||''} $${(t.size||t.sizePerSide||0).toFixed(2)} @ ${((t.price||0)*100).toFixed(0)}¢ — ${(t.market||'').slice(0,40)}`, level:'trade', time:new Date().toLocaleTimeString() }); });
+socket.on('trade', t => {
+  fetchPositions();
+  refreshBalance();
+  setTimeout(fetchBetLog, 3000);
+  appendLog({ msg: `TRADE: ${t.side||''} $${(t.size||0).toFixed(2)} @ ${((t.price||0)*100).toFixed(0)}¢ [${t.path||''}] — ${(t.market||'').slice(0,40)}`, level:'trade', time:new Date().toLocaleTimeString() });
+});
 
-// ── Scan Cell ────────────────────────────────────────────────────────────────
+// ── Scan Cell (dynamic) ───────────────────────────────────────────────────────
 function updateScanCell(d) {
-  const sym = d.symbol;
-  scanTs[sym] = Date.now();
+  const tf   = d.timeframe || '5m';
+  const slug = d.marketSlug || (d.symbol + '-' + tf + '-' + Date.now());
+  const cellId = slugToCellId(slug);
 
-  const wEl  = document.getElementById('scw-' + sym);
-  const sEl  = document.getElementById('scs-' + sym);
-  const cEl  = document.getElementById('scc-' + sym);
-  const bEl  = document.getElementById('scb-' + sym);
-  const tEl  = document.getElementById('sct-' + sym);
-  const lEl  = document.getElementById('scl-' + sym);
-  const cell = document.getElementById('sc-' + sym);
-  if (!wEl) return;
+  const grid = document.getElementById('scan-grid');
+  // Remove placeholder if present
+  const empty = grid.querySelector('.scan-empty');
+  if (empty) empty.remove();
+
+  // Create cell if it doesn't exist yet
+  let cell = document.getElementById(cellId);
+  if (!cell) {
+    cell = document.createElement('div');
+    cell.className = 'sc';
+    cell.id = cellId;
+    const tfClass = tf === '15m' ? 'tf-15m' : tf === '4h' ? 'tf-4h' : 'tf-5m';
+    cell.innerHTML = `
+      <div class="sc-header">
+        <span class="sc-sym">${esc(d.symbol)}</span>
+        <span class="tf-badge ${tfClass}" data-sym="${esc(d.symbol)}" data-tf="${tf}">${tf.toUpperCase()}</span>
+      </div>
+      <div class="sc-win flat sc-win-val">—</div>
+      <div class="sc-spike sc-spike-val">spike —</div>
+      <div class="sc-clob bad sc-clob-val">CLOB —</div>
+      <div class="sc-row">
+        <div class="sc-badge sb-idle sc-status-badge">IDLE</div>
+        <div class="sc-age sc-age-val"></div>
+      </div>
+      <div class="sc-mkt sc-mkt-val"></div>
+      <a class="sc-link sc-link-val" href="#" target="_blank"></a>`;
+    grid.appendChild(cell);
+    sortScanCells(grid);
+  }
+
+  // Track last update time and market metadata
+  scanTs[slug] = { ts: Date.now(), symbol: d.symbol, timeframe: tf, msLeft: d.msLeft || 0 };
 
   document.getElementById('scan-badge').textContent = 'Live';
-  document.getElementById('scan-badge').className = 'pbadge live';
+  document.getElementById('scan-badge').className   = 'pbadge live';
 
-  const pct  = d.pctWindow;
-  const sign = pct >= 0 ? '+' : '';
-  wEl.textContent = sign + pct.toFixed(3) + '%';
-  wEl.className = 'sc-win ' + (Math.abs(pct) < 0.08 ? 'flat' : pct > 0 ? 'up' : 'dn');
-
-  const sp = d.spike60;
-  sEl.textContent = 'spike ' + (sp >= 0 ? '+' : '') + sp.toFixed(3) + '%';
-
-  const clob = d.clobPrice;
-  const max  = d.maxClobPrice;
-  const ok   = clob < max;
-  cEl.textContent  = 'CLOB ' + d.direction + ' ' + clob.toFixed(3) + ' / max ' + max;
-  cEl.className    = 'sc-clob ' + (ok ? 'ok' : 'bad');
-
-  // Timeframe badge
-  if (tEl) {
-    const tf = d.timeframe || '5m';
-    tEl.textContent = tf.toUpperCase();
-    tEl.className = 'tf-badge ' + (tf === '4h' ? 'tf-4h' : tf === '15m' ? 'tf-15m' : 'tf-5m');
-  }
-
-  if (d.status === 'ready') {
-    bEl.textContent = '🔥 FIRE!';
-    bEl.className = 'sc-badge sb-ready';
-    cell.className = 'sc fire-bg';
-    document.getElementById('scan-badge').textContent = '🔥 FIRING';
-    document.getElementById('scan-badge').className = 'pbadge fire';
-  } else {
-    bEl.textContent = 'SKIP ' + clob.toFixed(2);
-    bEl.className = 'sc-badge sb-skip';
+  // 'waiting' = market tracked but not yet in evaluation window (> 8min left for 15m)
+  if (d.status === 'waiting') {
+    const pct = d.pctWindow || 0;
+    const wEl = cell.querySelector('.sc-win-val');
+    if (wEl) {
+      wEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(3) + '%';
+      wEl.className   = 'sc-win ' + (Math.abs(pct) < 0.08 ? 'flat' : pct > 0 ? 'up' : 'dn') + ' sc-win-val';
+    }
+    const sEl = cell.querySelector('.sc-spike-val');
+    if (sEl) sEl.textContent = 'monitoring…';
+    const cEl = cell.querySelector('.sc-clob-val');
+    if (cEl) { cEl.textContent = 'enters final 8min'; cEl.className = 'sc-clob flat sc-clob-val'; }
+    const bEl = cell.querySelector('.sc-status-badge');
+    const minLeft = d.msLeft > 0 ? Math.ceil(d.msLeft / 60000) : '?';
+    if (bEl) { bEl.textContent = 'WAIT ' + minLeft + 'min'; bEl.className = 'sc-badge sb-skip sc-status-badge'; }
     cell.className = 'sc';
+    return;
   }
 
-  if (lEl && d.marketUrl) {
-    lEl.href = d.marketUrl;
-    lEl.textContent = '→ View market';
-  } else if (lEl) {
-    lEl.textContent = '';
+  // Window %
+  const pct = d.pctWindow || 0;
+  const wEl = cell.querySelector('.sc-win-val');
+  if (wEl) {
+    wEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(3) + '%';
+    wEl.className   = 'sc-win ' + (Math.abs(pct) < 0.08 ? 'flat' : pct > 0 ? 'up' : 'dn') + ' sc-win-val';
   }
 
-  // Show the specific window being scanned — parse slug timestamp → "HH:MM – HH:MM"
-  // Duration depends on timeframe: 5m=300s, 15m=900s, 4h=14400s
-  const mEl = document.getElementById('scm-' + sym);
+  // Spike 60s
+  const sp  = d.spike60 || 0;
+  const sEl = cell.querySelector('.sc-spike-val');
+  if (sEl) sEl.textContent = 'spike ' + (sp >= 0 ? '+' : '') + sp.toFixed(3) + '%';
+
+  // CLOB
+  const clob = d.clobPrice    || 0;
+  const max  = d.maxClobPrice || 0;
+  const ok   = clob > 0 && clob < max;
+  const cEl  = cell.querySelector('.sc-clob-val');
+  if (cEl) {
+    cEl.textContent = 'CLOB ' + d.direction + ' ' + clob.toFixed(3) + ' / ' + max.toFixed(2);
+    cEl.className   = 'sc-clob ' + (ok ? 'ok' : 'bad') + ' sc-clob-val';
+  }
+
+  // Status badge
+  const bEl = cell.querySelector('.sc-status-badge');
+  if (bEl) {
+    if (d.status === 'ready') {
+      bEl.textContent = '🔥 FIRE!';
+      bEl.className   = 'sc-badge sb-ready sc-status-badge';
+      cell.className  = 'sc fire-bg';
+      document.getElementById('scan-badge').textContent = '🔥 FIRING';
+      document.getElementById('scan-badge').className   = 'pbadge fire';
+    } else {
+      const pathLabel = (d.path && d.path !== 'watching' && d.path !== 'SIGNAL')
+        ? d.path.split('+')[0] + ' SKIP '
+        : 'SKIP ';
+      bEl.textContent = pathLabel + clob.toFixed(2);
+      bEl.className   = 'sc-badge sb-skip sc-status-badge';
+      cell.className  = 'sc';
+    }
+  }
+
+  // Market time range
+  const mEl = cell.querySelector('.sc-mkt-val');
   if (mEl && d.marketSlug) {
     const parts = d.marketSlug.split('-');
-    const wTs = parseInt(parts[parts.length - 1]);
+    const wTs   = parseInt(parts[parts.length - 1]);
     if (!isNaN(wTs)) {
-      const tf = d.timeframe || '5m';
       const duration = tf === '4h' ? 14400 : tf === '15m' ? 900 : 300;
-      const fmt = t => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      const fmt = t => new Date(t).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' });
       const msLeft = d.msLeft || 0;
-      const timeLeft = msLeft > 0 ? ' (' + Math.ceil(msLeft / 1000) + 's)' : '';
-      mEl.textContent = fmt(wTs * 1000) + ' – ' + fmt((wTs + duration) * 1000) + timeLeft;
+      const tLeft  = msLeft > 0 ? ' (' + Math.ceil(msLeft/1000) + 's)' : ' (ended)';
+      mEl.textContent = fmt(wTs*1000) + '–' + fmt((wTs+duration)*1000) + tLeft;
     }
-  } else if (mEl) {
-    mEl.textContent = '';
+  }
+
+  // Link
+  const lEl = cell.querySelector('.sc-link-val');
+  if (lEl) {
+    if (d.marketUrl) { lEl.href = d.marketUrl; lEl.textContent = '→ View market'; }
+    else lEl.textContent = '';
   }
 }
 
-// ── Balance ──────────────────────────────────────────────────────────────────
+// Sort cells: BTC → ETH → DOGE, then 15m → 5m, then chronological
+function sortScanCells(grid) {
+  const cells = [...grid.querySelectorAll('.sc')];
+  cells.sort((a, b) => {
+    const tfA  = a.querySelector('[data-tf]')?.dataset.tf  || '5m';
+    const tfB  = b.querySelector('[data-tf]')?.dataset.tf  || '5m';
+    const symA = a.querySelector('[data-sym]')?.dataset.sym || '';
+    const symB = b.querySelector('[data-sym]')?.dataset.sym || '';
+    const so   = ((SYM_ORDER[symA]??9) - (SYM_ORDER[symB]??9)) * 10
+               + ((TF_ORDER[tfA]??5)  - (TF_ORDER[tfB]??5));
+    return so;
+  });
+  cells.forEach(c => grid.appendChild(c));
+}
+
+// ── Balance ───────────────────────────────────────────────────────────────────
 function updatePortfolioTotal() {
   const posValue = latestPositions.reduce((sum, p) => sum + (parseFloat(p.currentValue) || 0), 0);
   const total = lastUsdcBalance + posValue;
@@ -604,17 +676,16 @@ async function refreshBalance() {
       lastUsdcBalance = data.balance;
       updatePortfolioTotal();
     }
-  } catch { /* ignore */ }
+  } catch {}
 }
 
-// ── State ────────────────────────────────────────────────────────────────────
+// ── State ─────────────────────────────────────────────────────────────────────
 function applyState(s) {
-  const bal = s.balance || 0;
-  lastUsdcBalance = bal;
+  lastUsdcBalance = s.balance || 0;
   updatePortfolioTotal();
 
-  const pnl  = s.realizedPnl || 0;
-  const pEl  = document.getElementById('stat-pnl');
+  const pnl = s.realizedPnl || 0;
+  const pEl = document.getElementById('stat-pnl');
   pEl.textContent = (pnl >= 0 ? '+$' : '-$') + Math.abs(pnl).toFixed(2);
   pEl.className   = 'sval ' + (pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : '');
   const roi  = s.startBalance > 0 ? (pnl / s.startBalance * 100) : 0;
@@ -626,48 +697,63 @@ function applyState(s) {
   document.getElementById('stat-invested').textContent  = '$' + (s.totalInvested || 0).toFixed(2) + ' deployed';
 
   const w = s.winCount || 0, l = s.lossCount || 0, tot = w + l;
-  document.getElementById('stat-winrate').textContent = tot > 0 ? (w/tot*100).toFixed(0) + '%' : '—';
-  document.getElementById('stat-winloss').textContent = w + 'W / ' + l + 'L';
   const wrEl = document.getElementById('stat-winrate');
-  wrEl.className = 'sval ' + (tot > 0 ? (w/tot >= .6 ? 'pos' : w/tot >= .4 ? 'neu' : 'neg') : '');
-
-  document.getElementById('stat-trades').textContent = s.tradesExecuted || 0;
-  document.getElementById('stat-opps').textContent   = (s.opportunitiesFound || 0) + ' signals found';
+  wrEl.textContent = tot > 0 ? (w/tot*100).toFixed(0) + '%' : '—';
+  wrEl.className   = 'sval ' + (tot > 0 ? (w/tot >= .6 ? 'pos' : w/tot >= .4 ? 'neu' : 'neg') : '');
+  document.getElementById('stat-winloss').textContent = w + 'W / ' + l + 'L';
 
   const pill  = document.getElementById('status-pill');
   const dot   = document.getElementById('status-dot');
   const label = document.getElementById('status-label');
   if (s.status === 'STOPPED') {
     pill.className = 'status-pill stopped'; dot.classList.remove('pulse'); label.textContent = 'STOPPED';
+    // Bot process signalled stopped — disable the pause button (can't pause a stopped bot)
+    const btn = document.getElementById('bot-toggle-btn');
+    btn.textContent = 'Bot Stopped'; btn.className = 'stopped'; btn.disabled = true;
+  } else if (s.status === 'PAUSED') {
+    setBotPaused();
   } else {
     pill.className = 'status-pill'; dot.classList.add('pulse'); label.textContent = s.status || 'SCANNING';
+    const btn = document.getElementById('bot-toggle-btn');
+    if (btn.disabled && btn.textContent !== 'Pausing…' && btn.textContent !== 'Resuming…') {
+      btn.textContent = '⏸ Pause Bot'; btn.className = 'running'; btn.disabled = false;
+    }
   }
 
   if (s.wallet) document.getElementById('wallet-label').textContent = s.wallet.slice(0,6) + '…' + s.wallet.slice(-4);
 
-  // ── Risk state: drawdown + daily loss + markets count ─────────────────────
-  const rs = s.riskState;
+  // ── Risk / today state ────────────────────────────────────────────────────
+  const rs     = s.riskState;
   const riskEl = document.getElementById('risk-state');
   if (riskEl && rs && rs.sessionPeak > 0) {
-    const drawdownPct = rs.sessionPeak > 0 ? Math.max(0, (rs.sessionPeak - (s.balance||0)) / rs.sessionPeak * 100) : 0;
+    const drawdownPct = Math.max(0, (rs.sessionPeak - (s.balance||0)) / rs.sessionPeak * 100);
     const dailyLoss   = Math.max(0, (rs.dayStartBalance||0) - (s.balance||0));
     const ddColor = drawdownPct >= 35 ? 'var(--red)' : drawdownPct >= 20 ? 'var(--yellow)' : 'var(--muted2)';
-    const dlColor = dailyLoss >= 12 ? 'var(--red)' : dailyLoss >= 8 ? 'var(--yellow)' : 'var(--muted2)';
+    const dlColor = dailyLoss  >= 12  ? 'var(--red)' : dailyLoss  >= 8   ? 'var(--yellow)' : 'var(--muted2)';
     const wsAgeMs = rs.lastBinanceTick ? (Date.now() - rs.lastBinanceTick) : null;
     const wsAgeS  = wsAgeMs != null ? Math.round(wsAgeMs / 1000) : null;
     const wsColor = wsAgeS == null ? 'var(--muted)' : wsAgeS > 30 ? 'var(--red)' : wsAgeS > 10 ? 'var(--yellow)' : 'var(--green)';
     const wsLabel = wsAgeS == null ? '?' : wsAgeS > 30 ? `${wsAgeS}s ⚠` : `${wsAgeS}s`;
-    const maxDT = rs.maxDailyTrades || 3;
-    const dtCount = rs.dayTradeCount || 0;
+    const maxDT   = rs.maxDailyTrades || 8;
+    const dtCount = rs.dayTradeCount  || 0;
     const dtColor = dtCount >= maxDT ? 'var(--red)' : dtCount >= maxDT - 1 ? 'var(--yellow)' : 'var(--green)';
-    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> <span style="color:var(--muted)">·</span> <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span> <span style="color:var(--muted)">·</span> <span style="color:${dtColor}">Trades: ${dtCount}/${maxDT}</span> <span style="color:var(--muted)">·</span> <span style="color:${wsColor}">WS: ${wsLabel}</span>`;
+    riskEl.innerHTML = `<span style="color:${ddColor}">DD: ${drawdownPct.toFixed(1)}%</span> · <span style="color:${dlColor}">Day loss: $${dailyLoss.toFixed(2)}</span> · <span style="color:${dtColor}">Trades: ${dtCount}/${maxDT}</span> · <span style="color:${wsColor}">WS: ${wsLabel}</span>`;
     riskEl.style.display = 'inline';
-    // Markets count in scanner header
+
+    // Markets count
     const mcEl = document.getElementById('markets-count');
-    if (mcEl && (rs.markets5m != null)) {
-      const total = (rs.markets5m||0) + (rs.markets15m||0) + (rs.markets4h||0);
-      mcEl.textContent = `· ${total} mkts (${rs.markets5m} 5m · ${rs.markets15m} 15m · ${rs.markets4h} 4h)`;
+    if (mcEl && rs.markets5m != null) {
+      const total = (rs.markets5m||0) + (rs.markets15m||0);
+      mcEl.textContent = `· ${total} mkts (${rs.markets5m} 5m · ${rs.markets15m} 15m)`;
     }
+
+    // Today card
+    document.getElementById('stat-today').textContent = `${dtCount}/${maxDT}`;
+    document.getElementById('stat-today').className   = 'sval ' + (dtCount >= maxDT ? 'neg' : dtCount >= maxDT - 2 ? 'neu' : 'pos');
+    const dayPnl = (rs.dayStartBalance || 0) > 0 ? ((s.balance||0) - (rs.dayStartBalance||0)) : 0;
+    const dpEl   = document.getElementById('stat-today-pnl');
+    dpEl.textContent = 'Day P&L: ' + (dayPnl >= 0 ? '+$' : '-$') + Math.abs(dayPnl).toFixed(2);
+    dpEl.className   = 'ssub ' + (dayPnl > 0.05 ? 'pos' : dayPnl < -0.05 ? 'neg' : '');
   } else if (riskEl) {
     riskEl.style.display = 'none';
   }
@@ -679,31 +765,136 @@ function applyState(s) {
   if (s.cryptoPrices) updatePrices(s.cryptoPrices);
 }
 
-// ── Prices ───────────────────────────────────────────────────────────────────
+// ── Prices ────────────────────────────────────────────────────────────────────
 function updatePrices(prices) {
   for (const [sym, d] of Object.entries(prices)) {
     const pEl = document.getElementById('p-' + sym);
     const cEl = document.getElementById('c-' + sym);
     const wEl = document.getElementById('w-' + sym);
-    if (pEl) pEl.textContent = '$' + (d.price > 100 ? d.price.toLocaleString('en',{maximumFractionDigits:0}) : d.price.toFixed(3));
+    if (pEl) pEl.textContent = '$' + (d.price > 100 ? d.price.toLocaleString('en',{maximumFractionDigits:0}) : d.price.toFixed(d.price < 1 ? 5 : 3));
     if (cEl) {
       cEl.textContent = (d.change24h >= 0 ? '+' : '') + d.change24h.toFixed(2) + '%';
       cEl.style.color = d.change24h >= 0 ? 'var(--green)' : 'var(--red)';
     }
-    if (d.price && wEl) {
+    if (wEl && d.price) {
       if (!windowPrices[sym]) windowPrices[sym] = d.price;
       const pct = ((d.price - windowPrices[sym]) / windowPrices[sym]) * 100;
-      const abs = Math.abs(pct);
       wEl.textContent = (pct >= 0 ? '+' : '') + pct.toFixed(2) + '%';
-      wEl.className = 'ti-win ' + (abs < 0.15 ? 'flat' : pct > 0 ? 'up' : 'dn');
+      wEl.className   = 'ti-win ' + (Math.abs(pct) < 0.15 ? 'flat' : pct > 0 ? 'up' : 'dn');
     }
   }
 }
 
-// ── Live Positions state ─────────────────────────────────────────────────────
-let latestPositions = [];
+// ── Bet Log ───────────────────────────────────────────────────────────────────
+async function fetchBetLog() {
+  try {
+    const resp = await fetch('/api/bet-log');
+    if (!resp.ok) return;
+    const bets = await resp.json();
+    renderBetLog(bets);
+  } catch {}
+}
 
-// ── Live Positions ───────────────────────────────────────────────────────────
+function renderBetLog(bets) {
+  const tbody = document.getElementById('bets-table');
+  const cnt   = document.getElementById('bets-count');
+  if (!bets || !bets.length) {
+    tbody.innerHTML = '<tr class="erow"><td colspan="9">No bets yet</td></tr>';
+    cnt.textContent = '0';
+    return;
+  }
+  cnt.textContent = bets.length;
+
+  tbody.innerHTML = bets.map(b => {
+    // Asset + timeframe from market title
+    const title  = b.market || '';
+    let asset = title.split(' ')[0] || '?';
+    if (asset === 'Dogecoin') asset = 'DOGE';
+    else if (asset === 'Ethereum') asset = 'ETH';
+    else if (asset === 'Bitcoin') asset = 'BTC';
+    else if (asset === 'Solana') asset = 'SOL';
+    const isLagTitle = title.includes('Up or Down');
+    let tf = '5m';
+    if (isLagTitle) {
+      const rm = title.match(/(\d{1,2}:\d{2}(?:AM|PM))-(\d{1,2}:\d{2}(?:AM|PM))/i);
+      if (rm) {
+        const toMin = t => { const [h,rest]=t.split(':'); const m=parseInt(rest.slice(0,2)); const pm=rest.slice(2).toUpperCase()==='PM'; let hr=parseInt(h); if(pm&&hr!==12)hr+=12; if(!pm&&hr===12)hr=0; return hr*60+m; };
+        let diff = toMin(rm[2]) - toMin(rm[1]); if (diff<=0) diff+=1440;
+        tf = diff >= 240 ? '4h' : diff >= 14 ? '15m' : '5m';
+      }
+    }
+
+    // Path — show primary path + refSuspect warning
+    const rawPath = b.path || '';
+    const primPath = rawPath.split('+')[0] || 'OTHER';
+    const pathClass = ['REVERSAL','SPIKE','WINDOW','LATE'].includes(primPath) ? primPath : 'OTHER';
+    const suspectTag = b.refSuspect ? ` <span title="windowRef suspect: pctWindow divergence=${b.refDivergence}" style="color:#f5a623;font-size:10px;cursor:help">⚠</span>` : '';
+    const pathBadge = `<span class="path-badge path-${pathClass}">${esc(primPath)}</span>${suspectTag}`;
+
+    // Side badge
+    const isUp    = (b.side||'').toUpperCase() === 'UP';
+    const sideBadge = `<span class="${isUp ? 'b-up' : 'b-dn'}">${esc(b.side||'?')}</span>`;
+
+    // TF badge
+    const tfClass   = tf === '15m' ? 'tf-15m' : 'tf-5m';
+    const assetTf   = `<span style="font-weight:600">${esc(asset)}</span> <span class="tf-badge ${tfClass}">${tf}</span>`;
+
+    // Result
+    let resultBadge;
+    const r = b.result;
+    if (r === 'WIN')         resultBadge = '<span class="status-win">WIN</span>';
+    else if (r === 'LOSS')   resultBadge = '<span class="status-lose">LOSS</span>';
+    else if (r === 'CANCELLED') resultBadge = '<span class="status-cancel">VOID</span>';
+    else                     resultBadge = '<span class="status-pending">OPEN</span>';
+
+    // PnL — recompute from size+price (never trust stored pnl field: may be stale/buggy)
+    // WIN:  USDC_spent * (1/price - 1) = gross_redemption - cost
+    // LOSS: -USDC_spent
+    let pnlStr = '—';
+    if (b.result === 'WIN' && b.price > 0 && b.size > 0) {
+      const p = b.size * (1 / b.price - 1);
+      pnlStr = `<span class="pos">+$${p.toFixed(2)}</span>`;
+    } else if (b.result === 'LOSS' && b.size > 0) {
+      pnlStr = `<span class="neg">-$${b.size.toFixed(2)}</span>`;
+    }
+
+    // Latency
+    const lat = b.latencyMs != null ? b.latencyMs + 'ms' : '—';
+
+    // Entry price as cents
+    const entryCents = b.price > 0 ? (b.price * 100).toFixed(0) + '¢' : '—';
+
+    // Market link
+    const mktHtml = b.marketUrl
+      ? `<a href="${esc(b.marketUrl)}" target="_blank" class="link-style" style="max-width:140px;display:inline-block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;vertical-align:middle">${esc(title.slice(0,40))}</a>`
+      : `<span class="td-mkt">${esc(title.slice(0,40))}</span>`;
+
+    return `<tr>
+      <td class="mono" style="font-size:11px;color:var(--muted2)">${esc(b.time||'')}</td>
+      <td>${assetTf}</td>
+      <td>${pathBadge}</td>
+      <td>${sideBadge}</td>
+      <td class="mono">${entryCents}</td>
+      <td>$${(b.size||0).toFixed(2)}</td>
+      <td class="mono" style="color:var(--muted2)">${lat}</td>
+      <td>${resultBadge}</td>
+      <td>${pnlStr}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Live Positions ────────────────────────────────────────────────────────────
+let latestPositions = [];
+const dismissedPositions = new Set(JSON.parse(localStorage.getItem('dismissedPositions') || '[]'));
+
+function dismissPosition(conditionId) {
+  dismissedPositions.add(conditionId);
+  localStorage.setItem('dismissedPositions', JSON.stringify([...dismissedPositions]));
+  latestPositions = latestPositions.filter(p => p.conditionId !== conditionId);
+  renderPositions(latestPositions);
+  updatePortfolioTotal();
+}
+
 async function fetchPositions(manual = false) {
   const btn = document.getElementById('pos-refresh-btn');
   if (btn) { btn.textContent = '↻ Loading…'; btn.disabled = true; }
@@ -718,7 +909,7 @@ async function fetchPositions(manual = false) {
     if (btn) { btn.textContent = '✓ Done'; setTimeout(() => { btn.textContent = '↻ Refresh'; btn.disabled = false; }, 1500); }
   } catch (err) {
     document.getElementById('pos-table').innerHTML = `<tr class="erow"><td colspan="7" style="color:var(--red)">Error: ${esc(err.message)}</td></tr>`;
-    if (btn) { btn.textContent = '✗ Error'; btn.style.color = 'var(--red)'; setTimeout(() => { btn.textContent = '↻ Refresh'; btn.style.color = ''; btn.disabled = false; }, 2000); }
+    if (btn) { btn.textContent = '✗ Error'; btn.style.color='var(--red)'; setTimeout(() => { btn.textContent='↻ Refresh'; btn.style.color=''; btn.disabled=false; }, 2000); }
   }
 }
 
@@ -739,75 +930,87 @@ async function sellPosition(tokenId, sizeShares, curPrice, btn) {
       btn.textContent = '✗ Failed'; btn.disabled = false;
       appendLog({ msg: `SELL error: ${data.error}`, level:'error', time: new Date().toLocaleTimeString() });
     }
-  } catch (e) { btn.textContent = '✗ Error'; btn.disabled = false; }
+  } catch { btn.textContent = '✗ Error'; btn.disabled = false; }
 }
 
 function renderPositions(positions) {
   const tbody = document.getElementById('pos-table');
   const cnt   = document.getElementById('pos-count');
-  // Only show positions that are actionable: OPEN (waiting for result) or WIN (ready to redeem)
-  // Resolved losses are already visible in Bet History — no need to clutter this panel.
+  const now_ms = Date.now();
   const active = positions.filter(p => {
-    const cur = parseFloat(p.curPrice) || 0;
+    if (dismissedPositions.has(p.conditionId)) return false;
+    const cur = parseFloat(p.curPrice) ?? 0;
     const isResolved = p.redeemable === true;
-    const isLose = isResolved && cur <= 0.02;
-    return !isLose;
+    const isWin  = isResolved && cur >= 0.99;
+    const isOpen = !isResolved && cur > 0.02;
+    if (!isWin && !isOpen) return false;
+    if (isWin && p.negativeRisk === true && p.endDate) {
+      const endDateStr = p.endDate.slice(0,10);
+      const todayStr   = new Date(now_ms).toISOString().slice(0,10);
+      if (endDateStr <= todayStr) return false;
+    }
+    return true;
   });
-  cnt.textContent = active.length;
+
+  const lagCount = active.filter(p => (p.title||'').includes('Up or Down')).length;
+  cnt.textContent = lagCount || active.length;
+
   if (!active.length) {
     tbody.innerHTML = '<tr class="erow"><td colspan="7">No open positions — waiting for next trade</td></tr>';
     return;
   }
+
+  active.sort((a, b) => {
+    const aW = (a.redeemable===true && parseFloat(a.curPrice)>=0.99) ? 1 : 0;
+    const bW = (b.redeemable===true && parseFloat(b.curPrice)>=0.99) ? 1 : 0;
+    if (aW !== bW) return bW - aW;
+    return (parseFloat(b.currentValue)||0) - (parseFloat(a.currentValue)||0);
+  });
+
   tbody.innerHTML = active.map(p => {
     const size    = parseFloat(p.size)         || 0;
     const curVal  = parseFloat(p.currentValue) || 0;
-    // Use API's curPrice directly — more reliable than computing currentValue/size
-    // (data API can lag on currentValue but curPrice updates faster)
-    const _rawCur = parseFloat(p.curPrice);
-    const cur     = !isNaN(_rawCur) ? _rawCur : (size > 0 ? curVal / size : 0);
+    const cur     = parseFloat(p.curPrice)     ?? (size>0 ? curVal/size : 0);
     const outcome = p.outcome || '—';
-    const isUp    = outcome.toLowerCase() === 'up' || outcome.toLowerCase() === 'yes';
-    const cls     = isUp ? 'b-yes' : 'b-no';
+    const isUp    = outcome.toLowerCase()==='up' || outcome.toLowerCase()==='yes';
     const cost    = parseFloat(p.initialValue) || 0;
-    const avg     = parseFloat(p.avgPrice) || (size > 0 ? cost / size : 0);
-    const _rawPnl = parseFloat(p.cashPnl);
-    const cashPnl = !isNaN(_rawPnl) ? _rawPnl : (curVal - cost);
-
-    // Resolution gate: redeemable=true means the market has settled (win OR loss).
-    // Never show LOSE for an unresolved position — it may be open with a data-API lag.
+    const avg     = parseFloat(p.avgPrice)     || (size>0 ? cost/size : 0);
+    const cashPnl = parseFloat(p.cashPnl)      ?? (curVal-cost);
     const isResolved = p.redeemable === true;
-    const isWin  = isResolved && cur >= 0.99;
-    const isLose = isResolved && cur <= 0.02;
-    let badge, bcls;
-    if (isWin)        { badge = '✓ WIN';  bcls = 'status-win'; }
-    else if (!isLose) { badge = '⏳ OPEN' + (cur > 0.01 ? ' ' + (cur*100).toFixed(0) + '¢' : ''); bcls = 'status-pending'; }
-    else              { badge = '✗ LOSE'; bcls = 'status-lose'; }
+    const isWin   = isResolved && cur >= 0.99;
+    const isNegRisk = p.negativeRisk === true;
+    const isLagTrade = (p.title||'').includes('Up or Down');
 
-    const pnlStr = (cashPnl >= 0 ? '+$' : '-$') + Math.abs(cashPnl).toFixed(2);
-    const pnlCls = cashPnl > 0 ? 'pos' : cashPnl < 0 ? 'neg' : '';
+    let badge = isWin ? '✓ WIN' : '⏳ ' + (cur*100).toFixed(0) + '¢';
+    let bcls  = isWin ? 'status-win' : 'status-pending';
+    const pnlStr = (cashPnl>=0?'+$':'-$') + Math.abs(cashPnl).toFixed(2);
+    const pnlCls = cashPnl>0?'pos':cashPnl<0?'neg':'';
 
     let action = '<span style="color:var(--muted)">—</span>';
     if (isWin) {
-      const cid = esc(p.conditionId || '');
-      const idx = parseInt(p.outcomeIndex) || 0;
-      action = `<button class="redeem-btn" onclick="redeemPosition('${cid}',${idx},this)">Redeem $${curVal.toFixed(2)}</button>`;
-    } else if (!isLose && cur > 0.01 && cur < 0.99) {
-      const tid = esc(p.asset || p.tokenId || '');
+      const cid = esc(p.conditionId||'');
+      const idx = parseInt(p.outcomeIndex)||0;
+      action = `<span style="display:inline-flex;gap:4px;align-items:center">
+        <button class="redeem-btn" onclick="redeemPosition('${cid}',${idx},this,${isNegRisk})">Redeem $${curVal.toFixed(2)}</button>
+        <button class="redeem-btn" style="background:rgba(255,255,255,0.04);border-color:rgba(255,255,255,0.12);color:var(--muted2);padding:3px 6px" onclick="dismissPosition('${cid}')">✕</button>
+      </span>`;
+    } else if (cur > 0.05 && cur < 0.95) {
+      const tid = esc(p.asset||p.tokenId||'');
       if (tid && size > 0) {
         action = `<button class="redeem-btn" style="background:rgba(63,128,255,0.1);border-color:rgba(63,128,255,0.3);color:var(--blue)" onclick="sellPosition('${tid}',${size.toFixed(4)},${cur.toFixed(4)},this)">Sell $${curVal.toFixed(2)}</button>`;
       }
     }
 
-    const title  = esc((p.title || p.market || '—').slice(0, 52));
-    const slug   = p.eventSlug || p.slug || '';
-    const mktUrl = slug ? `https://polymarket.com/event/${slug}` : '';
-    const titleHtml = mktUrl
-      ? `<a href="${mktUrl}" target="_blank" class="link-style">${title} ↗</a>`
-      : title;
+    const rawTitle = p.title || p.market || '—';
+    const title    = esc(rawTitle.slice(0,54));
+    const slug     = p.eventSlug || p.slug || '';
+    const mktUrl   = slug ? `https://polymarket.com/event/${slug}` : '';
+    const titleHtml = mktUrl ? `<a href="${mktUrl}" target="_blank" class="link-style">${title} ↗</a>` : title;
+    const manualTag = !isLagTrade ? `<span style="font-size:9px;font-weight:600;padding:1px 5px;border-radius:3px;background:rgba(168,127,255,.15);color:#a87fff;margin-left:4px;vertical-align:middle">manual</span>` : '';
 
     return `<tr>
-      <td class="td-mkt" title="${title}">${titleHtml}</td>
-      <td><span class="${cls}">${esc(outcome)}</span></td>
+      <td class="td-mkt" title="${esc(rawTitle)}">${titleHtml}${manualTag}</td>
+      <td><span class="${isUp?'b-yes':'b-no'}">${esc(outcome)}</span></td>
       <td>$${cost.toFixed(2)}</td>
       <td class="mono">${(avg*100).toFixed(0)}¢</td>
       <td><span class="${bcls}">${badge}</span></td>
@@ -817,18 +1020,22 @@ function renderPositions(positions) {
   }).join('');
 }
 
-async function redeemPosition(conditionId, outcomeIndex, btn) {
+async function redeemPosition(conditionId, outcomeIndex, btn, negRisk=false) {
   btn.disabled = true; btn.textContent = 'Sending…';
   try {
     const resp = await fetch('/api/redeem', {
-      method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ conditionId, outcomeIndex }),
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ conditionId, outcomeIndex, negRisk }),
     });
     const data = await resp.json();
     if (data.success) {
       btn.textContent = '✓ Sent'; btn.classList.add('sent');
       appendLog({ msg:`REDEEM tx: ${data.txHash?.slice(0,20)}…`, level:'success', time:new Date().toLocaleTimeString() });
-      setTimeout(fetchPositions, 15000);
+      latestPositions = latestPositions.filter(p => p.conditionId !== conditionId);
+      renderPositions(latestPositions);
+      updatePortfolioTotal();
+      setTimeout(fetchPositions, 30000);
+      setTimeout(fetchPositions, 90000);
     } else {
       btn.textContent = '✗ Failed'; btn.disabled = false;
       appendLog({ msg:`REDEEM error: ${data.error}`, level:'error', time:new Date().toLocaleTimeString() });
@@ -836,44 +1043,60 @@ async function redeemPosition(conditionId, outcomeIndex, btn) {
   } catch { btn.textContent = '✗ Error'; btn.disabled = false; }
 }
 
-// ── Log ──────────────────────────────────────────────────────────────────────
+// ── Log ───────────────────────────────────────────────────────────────────────
 function appendLog(entry) {
   const box = document.getElementById('log-box');
   box.insertAdjacentHTML('afterbegin', logHtml(entry));
   while (box.children.length > 100) box.removeChild(box.lastChild);
 }
-
 function logHtml(l) {
   const cls = {success:'ll-success',error:'ll-error',warn:'ll-warn',trade:'ll-trade',info:'ll-info'}[l.level]||'ll-info';
   return `<div class="ll ${cls}"><span class="ll-ts">[${l.time}]</span>${esc(l.msg)}</div>`;
 }
-
 function esc(s) {
   return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
+// ── Bot control ───────────────────────────────────────────────────────────────
 let botPaused = false;
+
+function setBotOffline() {
+  const btn  = document.getElementById('bot-toggle-btn');
+  const pill = document.getElementById('status-pill');
+  const dot  = document.getElementById('status-dot');
+  const lbl  = document.getElementById('status-label');
+  pill.className = 'status-pill stopped';
+  dot.classList.remove('pulse');
+  lbl.textContent = 'OFFLINE';
+  btn.textContent = 'Bot Offline';
+  btn.className   = 'stopped';
+  btn.disabled    = true;
+}
+
+function setBotOnline() {
+  const btn = document.getElementById('bot-toggle-btn');
+  btn.disabled = false;
+  // Actual running/paused state will be set by applyState or syncBotStatus
+}
 
 async function toggleBot() {
   const btn = document.getElementById('bot-toggle-btn');
   btn.disabled = true;
   if (!botPaused) {
-    if (!confirm('Pause trading? The bot stays running but will not place new orders.')) { btn.disabled = false; return; }
+    if (!confirm('Pause trading? The bot stays running but will not place new orders.')) { btn.disabled=false; return; }
     btn.textContent = 'Pausing…';
     try {
-      const r = await fetch('/api/bot/pause', { method: 'POST' });
+      const r = await fetch('/api/bot/pause', { method:'POST' });
       const d = await r.json();
-      if (d.success) setBotPaused();
-      else { btn.textContent = '⏸ Pause Bot'; alert('Failed: ' + (d.error||'unknown')); }
-    } catch { btn.textContent = '⏸ Pause Bot'; }
+      if (d.success) setBotPaused(); else { btn.textContent='⏸ Pause Bot'; alert('Failed: '+(d.error||'unknown')); }
+    } catch { btn.textContent='⏸ Pause Bot'; }
   } else {
     btn.textContent = 'Resuming…';
     try {
-      const r = await fetch('/api/bot/resume', { method: 'POST' });
+      const r = await fetch('/api/bot/resume', { method:'POST' });
       const d = await r.json();
-      if (d.success) setBotRunning();
-      else { btn.textContent = '▶ Resume Bot'; alert('Failed: ' + (d.error||'unknown')); }
-    } catch { btn.textContent = '▶ Resume Bot'; }
+      if (d.success) setBotRunning(); else { btn.textContent='▶ Resume Bot'; alert('Failed: '+(d.error||'unknown')); }
+    } catch { btn.textContent='▶ Resume Bot'; }
   }
   btn.disabled = false;
 }
@@ -881,8 +1104,7 @@ async function toggleBot() {
 function setBotRunning() {
   botPaused = false;
   const btn = document.getElementById('bot-toggle-btn');
-  btn.textContent = '⏸ Pause Bot';
-  btn.className = 'running';
+  btn.textContent = '⏸ Pause Bot'; btn.className = 'running'; btn.disabled = false;
   document.getElementById('status-pill').className = 'status-pill';
   document.getElementById('status-dot').classList.add('pulse');
   document.getElementById('status-label').textContent = 'SCANNING';
@@ -891,30 +1113,34 @@ function setBotRunning() {
 function setBotPaused() {
   botPaused = true;
   const btn = document.getElementById('bot-toggle-btn');
-  btn.textContent = '▶ Resume Bot';
-  btn.className = 'stopped';
+  btn.textContent = '▶ Resume Bot'; btn.className = 'stopped'; btn.disabled = false;
   document.getElementById('status-pill').className = 'status-pill stopped';
   document.getElementById('status-dot').classList.remove('pulse');
   document.getElementById('status-label').textContent = 'PAUSED';
 }
 
-// Sync button with bot status from server
 async function syncBotStatus() {
   try {
-    const r = await fetch('/api/bot/status');
+    const r = await fetch('/api/bot/status', { signal: AbortSignal.timeout(4000) });
+    if (!r.ok) { setBotOffline(); return; }
     const d = await r.json();
-    if (d.status === 'PAUSED') setBotPaused();
-    else setBotRunning();
-  } catch {}
+    if      (d.status === 'PAUSED')  setBotPaused();
+    else if (d.status === 'STOPPED') setBotOffline();
+    else                             setBotRunning();
+  } catch {
+    setBotOffline();
+  }
 }
-setInterval(syncBotStatus, 8000);
-syncBotStatus();
 
 // Init
 fetchPositions();
+fetchBetLog();
 refreshBalance();
-setInterval(fetchPositions, 15000);
-setInterval(refreshBalance, 15000);
+setInterval(fetchPositions,  15000);
+setInterval(fetchBetLog,     30000);
+setInterval(refreshBalance,  15000);
+setInterval(syncBotStatus,    8000);
+syncBotStatus();
 </script>
 </body>
 </html>

@@ -37,7 +37,7 @@ function loadConfig() {
     reserveUsdc:        parseFloat(process.env.RESERVE_USDC         || '5'),
     minEdgeMultiplier:  parseFloat(process.env.MIN_EDGE_MULTIPLIER  || '1.5'),
     maxDailyLossUsdc:   parseFloat(process.env.MAX_DAILY_LOSS_USDC  || '10'),
-    maxDailyTrades:     parseInt  (process.env.MAX_DAILY_TRADES     || '3'),
+    maxDailyTrades:     parseInt  (process.env.MAX_DAILY_TRADES     || '8'),
 
     // Taker fee rates by market category (effective March 31, 2026)
     // 5-min Up/Down markets use crypto_fees_v2: 7.2% taker (oracle lag edge ~30-50¢, far exceeds fee)

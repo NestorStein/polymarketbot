@@ -74,10 +74,45 @@ async function main() {
     process.exit(1);
   }
 
-  // Telegram command polling — /report returns live bot state
+  // Telegram command polling
   const tg = require('./src/telegram');
   tg.startPolling(async (cmd) => {
-    if (cmd === '/report') tg.send(await engine.buildReport());
+    if (cmd === '/report')    { tg.send(await engine.buildReport());    return; }
+    if (cmd === '/monitor')   { tg.send(engine.buildMonitor());         return; }
+    if (cmd === '/positions') { tg.send(await engine.buildPositions()); return; }
+    if (cmd === '/balance') {
+      const bal = engine.oracleLag?._cachedBalance ?? 0;
+      tg.send(`💰 Balance: $${bal.toFixed(2)}`);
+      return;
+    }
+    if (cmd === '/pause') {
+      if (engine.oracleLag) engine.oracleLag.paused = true;
+      tg.send('⏸ Bot paused — no new trades will be placed.');
+      return;
+    }
+    if (cmd === '/resume') {
+      if (engine.oracleLag) engine.oracleLag.paused = false;
+      tg.send('▶️ Bot resumed — scanning for opportunities.');
+      return;
+    }
+    if (cmd === '/help') {
+      tg.send(
+        '🤖 <b>Bot commands</b>\n' +
+        '/monitor   — live prices, window moves, recent signals\n' +
+        '/positions — open positions &amp; wins ready to redeem\n' +
+        '/report    — daily P&amp;L, last 5 bets, latency\n' +
+        '/balance   — current USDC balance\n' +
+        '/pause     — pause trading (keeps scanning)\n' +
+        '/resume    — resume trading\n' +
+        '/help      — this message\n\n' +
+        '🔔 <b>Auto alerts</b>\n' +
+        '• Trade fired\n' +
+        '• Near miss (CLOB just above threshold)\n' +
+        '• Position settled (WIN/LOSS)\n' +
+        '• Daily summary at midnight'
+      );
+      return;
+    }
   });
 }
 

@@ -172,19 +172,35 @@ class PolymarketClient {
     if (this.ready && this.client) {
       try {
         const data = await this.client.getBalanceAllowance({ asset_type: 'COLLATERAL' });
-        if (data?.balance) return parseInt(data.balance) / 1e6;
+        // Note: CLOB balance is 0 when USDC is in wallet (not pre-deposited to CLOB).
+        // Only use it if it's actually positive; otherwise fall through to on-chain.
+        const clobBal = data?.balance ? parseInt(data.balance) / 1e6 : 0;
+        if (clobBal > 0) return clobBal;
       } catch { /* fall through to on-chain */ }
     }
     // Fallback: direct RPC call with multiple providers
-    const rpcs = ['https://polygon.drpc.org', 'https://polygon.llamarpc.com'];
+    const rpcs = [
+      'https://polygon-bor-rpc.publicnode.com',
+      'https://polygon.drpc.org',
+      'https://polygon.meowrpc.com',
+    ];
     const USDC_E = '0x2791bca1f2de4661ed88a30c99a7a9449aa84174';
     const addr = this.wallet.address;
     const calldata = '0x70a08231' + '000000000000000000000000' + addr.slice(2).toLowerCase();
     for (const rpc of rpcs) {
       try {
-        const provider = new ethers.providers.JsonRpcProvider(rpc);
-        const raw = await provider.call({ to: USDC_E, data: calldata }, 'latest');
-        return parseInt(raw, 16) / 1e6;
+        const res = await new Promise((resolve, reject) => {
+          const https = require('https');
+          const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: USDC_E, data: calldata }, 'latest'] });
+          const url = new URL(rpc);
+          const req = https.request({ hostname: url.hostname, path: url.pathname, method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000 }, r => {
+            let d = ''; r.on('data', c => d += c); r.on('end', () => resolve(d));
+          });
+          req.on('error', reject); req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+          req.write(body); req.end();
+        });
+        const j = JSON.parse(res);
+        if (j.result && j.result !== '0x') return parseInt(j.result, 16) / 1e6;
       } catch { /* try next */ }
     }
     return 0;
@@ -195,12 +211,21 @@ class PolymarketClient {
     const USDC_N = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
     const addr = this.wallet.address;
     const calldata = '0x70a08231' + '000000000000000000000000' + addr.slice(2).toLowerCase();
-    const rpcs = ['https://polygon.drpc.org', 'https://polygon.llamarpc.com'];
+    const rpcs = ['https://polygon-bor-rpc.publicnode.com', 'https://polygon.drpc.org'];
     for (const rpc of rpcs) {
       try {
-        const provider = new ethers.providers.JsonRpcProvider(rpc);
-        const raw = await provider.call({ to: USDC_N, data: calldata }, 'latest');
-        return parseInt(raw, 16) / 1e6;
+        const res = await new Promise((resolve, reject) => {
+          const https = require('https');
+          const body = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_call', params: [{ to: USDC_N, data: calldata }, 'latest'] });
+          const url = new URL(rpc);
+          const req = https.request({ hostname: url.hostname, path: url.pathname, method: 'POST', headers: { 'Content-Type': 'application/json' }, timeout: 5000 }, r => {
+            let d = ''; r.on('data', c => d += c); r.on('end', () => resolve(d));
+          });
+          req.on('error', reject); req.on('timeout', () => { req.destroy(); reject(new Error('timeout')); });
+          req.write(body); req.end();
+        });
+        const j = JSON.parse(res);
+        if (j.result && j.result !== '0x') return parseInt(j.result, 16) / 1e6;
       } catch { /* try next */ }
     }
     return 0;

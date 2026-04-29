@@ -74,6 +74,28 @@ function startupAlert({ balance, markets5m, markets15m, markets4h }) {
   );
 }
 
+function nearMissAlert({ symbol, direction, path, timeframe, clobPrice, maxClobPrice, pctWindow, msLeft }) {
+  const gap = (clobPrice - maxClobPrice).toFixed(3);
+  send(
+    `🔔 <b>NEAR MISS</b> [${path}][${timeframe}]\n` +
+    `${symbol} ${direction} | CLOB=${clobPrice.toFixed(3)} (max=${maxClobPrice}, gap=+${gap})\n` +
+    `Window: ${pctWindow >= 0 ? '+' : ''}${pctWindow.toFixed(3)}% | ${Math.round(msLeft / 1000)}s left\n` +
+    `<i>Market is moving — CLOB just above threshold</i>`
+  );
+}
+
+function positionSettledAlert({ symbol, direction, path, entryPrice, size, result, pnl, market }) {
+  const icon    = result === 'WIN' ? '🟢' : '🔴';
+  const pnlStr  = result === 'WIN' ? `+$${pnl.toFixed(2)}` : `-$${Math.abs(pnl).toFixed(2)}`;
+  const label   = (market || '').replace(/.*Up or Down - /, '').slice(0, 28);
+  send(
+    `${icon} <b>POSITION SETTLED: ${result}</b>\n` +
+    `${symbol} ${direction} | ${label}\n` +
+    `Entry: ${entryPrice.toFixed(3)} × $${size.toFixed(2)} → <b>${pnlStr}</b>\n` +
+    `Path: ${path}`
+  );
+}
+
 // ── Command polling ───────────────────────────────────────────────────────────
 
 /**
@@ -132,4 +154,4 @@ function startPolling(handler) {
   poll(); // run forever in background
 }
 
-module.exports = { send, tradeAlert, signalAlert, circuitBreakerAlert, clobWsReconnectAlert, dailySummary, startupAlert, startPolling };
+module.exports = { send, tradeAlert, signalAlert, circuitBreakerAlert, clobWsReconnectAlert, dailySummary, startupAlert, nearMissAlert, positionSettledAlert, startPolling };

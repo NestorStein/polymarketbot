@@ -9,10 +9,11 @@ const EventEmitter = require('events');
 const axios    = require('axios');
 const ethers   = require('ethers');
 
-const CTF_ADDRESS  = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
-const USDC_E       = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
-const ZERO_B32     = '0x' + '0'.repeat(64);
-const CTF_IFACE    = new ethers.utils.Interface([
+const CTF_ADDRESS       = '0x4D97DCd97eC945f40cF65F87097ACe5EA0476045';
+const NEG_RISK_ADAPTER  = '0xd91E80cF2E7be2e162c6513ceD06f1dD0dA35296';
+const USDC_E            = '0x2791Bca1f2de4661ED88A30C99A7a9449Aa84174';
+const ZERO_B32          = '0x' + '0'.repeat(64);
+const CTF_IFACE         = new ethers.utils.Interface([
   'function redeemPositions(address collateralToken, bytes32 parentCollectionId, bytes32 conditionId, uint256[] calldata indexSets) external',
 ]);
 const POLY_RPCS = [
@@ -353,6 +354,34 @@ class Dashboard extends EventEmitter {
       }
     });
 
+    // Recent bets from bet_log.json — for dashboard Recent Bets panel
+    this.app.get('/api/bet-log', (req, res) => {
+      try {
+        const betLogFile = path.join(__dirname, '..', 'bet_log.json');
+        if (!fs.existsSync(betLogFile)) return res.json([]);
+        const bets = JSON.parse(fs.readFileSync(betLogFile, 'utf8'));
+        // Return last 20, most recent first
+        const recent = bets.slice(-20).reverse().map(b => ({
+          ts:      b.ts || 0,
+          time:    b.time || '',
+          market:  b.market || '',
+          marketUrl: b.marketUrl || '',
+          side:    b.side || '',
+          price:   b.price || 0,
+          size:    b.size || 0,
+          path:    b.path || '',
+          result:        b.result || null,
+          pnl:           b.pnl != null ? b.pnl : null,
+          latencyMs:     b.latency?.totalMs || null,
+          refDivergence: b.refDivergence ?? null,
+          refSuspect:    b.refSuspect    ?? false,
+        }));
+        res.json(recent);
+      } catch (err) {
+        res.status(500).json({ error: err.message });
+      }
+    });
+
     // Sell an open position via CLOB GTC order
     this.app.post('/api/sell', async (req, res) => {
       try {
@@ -370,11 +399,11 @@ class Dashboard extends EventEmitter {
     // Redeem a winning position on-chain
     this.app.post('/api/redeem', async (req, res) => {
       try {
-        const { conditionId, outcomeIndex } = req.body;
+        const { conditionId, outcomeIndex, negRisk } = req.body;
         if (!conditionId || outcomeIndex === undefined) {
           return res.status(400).json({ error: 'conditionId and outcomeIndex required' });
         }
-        const txHash = await this._redeemOnChain(conditionId, parseInt(outcomeIndex));
+        const txHash = await this._redeemOnChain(conditionId, parseInt(outcomeIndex), !!negRisk);
         res.json({ success: true, txHash });
       } catch (err) {
         res.status(500).json({ error: err.message });
@@ -382,9 +411,11 @@ class Dashboard extends EventEmitter {
     });
   }
 
-  async _redeemOnChain(conditionId, outcomeIndex) {
-    const indexSet = outcomeIndex === 0 ? 1 : 2;
+  async _redeemOnChain(conditionId, outcomeIndex, negRisk = false) {
+    const indexSet     = outcomeIndex === 0 ? 1 : 2;
+    const contractAddr = negRisk ? NEG_RISK_ADAPTER : CTF_ADDRESS;
     const data = CTF_IFACE.encodeFunctionData('redeemPositions', [USDC_E, ZERO_B32, conditionId, [indexSet]]);
+    console.log(`[Dashboard] Redeem ${negRisk ? 'NegRisk' : 'CTF'} conditionId=${conditionId} outcomeIndex=${outcomeIndex}`);
     const wallet = new ethers.Wallet(this.config.polygonPrivateKey);
 
     // Try each RPC until one returns the nonce successfully
@@ -398,7 +429,7 @@ class Dashboard extends EventEmitter {
     }
     if (nonce == null) throw new Error('All RPCs failed to get nonce');
     const tx = {
-      to: CTF_ADDRESS,
+      to: contractAddr,
       data,
       gasLimit: 200000,
       gasPrice: ethers.utils.parseUnits('300', 'gwei'),
@@ -524,17 +555,19 @@ class Dashboard extends EventEmitter {
   }
 
   oracleScanTick(data) {
-    // data: { symbol, path, pctWindow, spike60, clobPrice, maxClobPrice, direction, status, msLeft }
+    // data: { symbol, path, pctWindow, spike60, clobPrice, maxClobPrice, direction, status, msLeft, marketSlug, timeframe }
     this.state.oracleScan = this.state.oracleScan || {};
-    this.state.oracleScan[data.symbol] = { ...data, ts: Date.now() };
+    // Key by slug so multiple concurrent windows per symbol are all stored
+    const key = data.marketSlug || (data.symbol + '-' + (data.timeframe || '5m'));
+    this.state.oracleScan[key] = { ...data, ts: Date.now() };
     this.state.scanCount = (this.state.scanCount || 0) + 1;
     this.io.emit('oracle_scan', data);
 
-    // Log meaningful signal detections (skip routine 'watching' noise)
-    const realPath = data.path && data.path !== 'watching' && data.path !== 'SIGNAL';
+    // Log meaningful signal detections (skip routine 'watching'/'waiting' noise)
+    const realPath = data.path && data.path !== 'watching' && data.path !== 'SIGNAL' && data.path !== '—' && data.status !== 'waiting';
     if (realPath) {
       const w    = `${data.pctWindow >= 0 ? '+' : ''}${(data.pctWindow * 100).toFixed(3)}%`;
-      const clob = `CLOB=${data.clobPrice?.toFixed(3)} max=${data.maxClobPrice?.toFixed(2)}`;
+      const clob = `CLOB=${(data.clobPrice ?? 0).toFixed(3)} max=${(data.maxClobPrice ?? 0).toFixed(2)}`;
       const skip = data.status === 'skip' ? ' ⛔ SKIP' : ' 🎯';
       this._log(`[${data.path}] ${data.symbol} ${data.direction} window=${w} ${clob}${skip}`, data.status === 'skip' ? 'warn' : 'success');
     }

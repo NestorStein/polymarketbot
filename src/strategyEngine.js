@@ -392,17 +392,19 @@ class StrategyEngine {
         try { log = JSON.parse(fs.readFileSync(file, 'utf8')); } catch { log = []; }
       }
       const entry = {
-        ts:        trade.ts || Date.now(),
-        time:      new Date(trade.ts || Date.now()).toLocaleTimeString(),
-        market:    trade.market,
-        marketId:  trade.marketId,
-        marketUrl: trade.marketUrl || '',
-        side:      trade.side,
-        price:     trade.price,   // CLOB ask at trigger time
-        size:      trade.size,
-        orderId:   trade.orderId,
-        path:      trade.path,
-        latency:   trade.latency || null,  // { signalToSubmitMs, submitToConfirmMs, totalMs }
+        ts:           trade.ts || Date.now(),
+        time:         new Date(trade.ts || Date.now()).toLocaleTimeString(),
+        market:       trade.market,
+        marketId:     trade.marketId,
+        marketUrl:    trade.marketUrl || '',
+        side:         trade.side,
+        price:        trade.price,   // CLOB ask at trigger time
+        size:         trade.size,
+        orderId:      trade.orderId,
+        path:         trade.path,
+        latency:      trade.latency || null,  // { signalToSubmitMs, submitToConfirmMs, totalMs }
+        refDivergence: trade.refDivergence ?? null,  // windowRef plausibility score (>0.45 = suspect)
+        refSuspect:    trade.refSuspect   ?? false,  // true if 15m windowRef may be misaligned
       };
       log.push(entry);
       fs.writeFileSync(file, JSON.stringify(log, null, 2));
@@ -553,6 +555,160 @@ class StrategyEngine {
       `${wsLine}${latencyLine}\n` +
       `Status: <b>${status}</b>` +
       betsSection
+    );
+  }
+
+  async buildPositions() {
+    const https = require('https');
+    const wallet = this.oracleLag?.poly?.wallet?.address;
+    if (!wallet) return '❌ Wallet not ready';
+
+    function get(url) {
+      return new Promise((resolve) => {
+        const req = https.request(url, { timeout: 8000 }, res => {
+          let raw = '';
+          res.on('data', d => raw += d);
+          res.on('end', () => { try { resolve(JSON.parse(raw)); } catch { resolve([]); } });
+        });
+        req.on('error', () => resolve([]));
+        req.setTimeout(8000, () => { req.destroy(); resolve([]); });
+        req.end();
+      });
+    }
+
+    const data = await get(`https://data-api.polymarket.com/positions?user=${wallet}&sizeThreshold=.01&sortBy=CURRENT`);
+    if (!Array.isArray(data) || !data.length) return '📭 No positions found';
+
+    const nowMs = Date.now();
+    const wins = [], open = [];
+    for (const p of data) {
+      const cur = parseFloat(p.curPrice ?? 0);
+      const redeemable = p.redeemable === true;
+      const isWin  = redeemable && cur >= 0.99;
+      const isOpen = !redeemable && cur > 0.02;
+      if (!isWin && !isOpen) continue;
+      // Skip negRisk WINs where market end date has passed — API keeps returning them
+      // indefinitely. Hide as soon as the end date is today or earlier.
+      if (isWin && p.negativeRisk === true && p.endDate) {
+        const endDateStr = p.endDate.slice(0, 10);
+        const todayStr   = new Date(nowMs).toISOString().slice(0, 10);
+        if (endDateStr <= todayStr) continue;
+      }
+      if (isWin)  wins.push(p);
+      else        open.push(p);
+    }
+
+    const fmt = (p) => {
+      const cur    = parseFloat(p.curPrice ?? 0);
+      const val    = parseFloat(p.currentValue ?? 0);
+      const cost   = parseFloat(p.initialValue ?? 0);
+      const pnl    = val - cost;
+      const title  = (p.title || '').replace(/.*Up or Down - /, '').slice(0, 24);
+      const icon   = p.redeemable ? '✅' : (cur > 0.5 ? '🟡' : '🔴');
+      const pnlStr = (pnl >= 0 ? '+' : '') + '$' + Math.abs(pnl).toFixed(2);
+      return `${icon} ${p.outcome || '?'} | ${title}\n   ${(cur * 100).toFixed(0)}¢ × ${parseFloat(p.size ?? 0).toFixed(1)} = $${val.toFixed(2)} (${pnlStr})`;
+    };
+
+    const lines = [];
+    if (wins.length)  lines.push('<b>✅ WIN — ready to redeem:</b>\n' + wins.map(fmt).join('\n'));
+    if (open.length)  lines.push('<b>⏳ Open positions:</b>\n' + open.map(fmt).join('\n'));
+    if (!lines.length) return '📭 No active positions';
+
+    const totalVal  = [...wins,...open].reduce((s,p) => s + parseFloat(p.currentValue ?? 0), 0);
+    const totalCost = [...wins,...open].reduce((s,p) => s + parseFloat(p.initialValue  ?? 0), 0);
+    const totalPnl  = totalVal - totalCost;
+    return `💼 <b>Positions</b> (${wins.length} win, ${open.length} open)\n` +
+      `Total value: $${totalVal.toFixed(2)} (${totalPnl >= 0 ? '+' : ''}$${totalPnl.toFixed(2)})\n\n` +
+      lines.join('\n\n');
+  }
+
+  buildMonitor() {
+    const fs   = require('fs');
+    const path = require('path');
+    const now  = new Date();
+    const utc  = now.toUTCString().replace(' GMT', ' UTC');
+
+    // ── Bot health ────────────────────────────────────────────────────────────
+    const balance   = this.oracleLag?._cachedBalance ?? 0;
+    const dayStart  = this.oracleLag?.dayStartBalance || balance;
+    const pnl       = balance - dayStart;
+    const pnlSign   = pnl >= 0 ? '+' : '';
+    const status    = this.oracleLag?.paused ? '⏸ PAUSED' : '🟢 SCANNING';
+    const dayTrades = this.oracleLag?.dayTradeCount ?? 0;
+    const maxTrades = this.oracleLag?.config?.maxDailyTrades ?? 3;
+
+    // ── Binance WS freshness ──────────────────────────────────────────────────
+    const lastTick = this.oracleLag?.lastBinanceTick ?? 0;
+    const tickAge  = lastTick ? Math.round((Date.now() - lastTick) / 1000) : null;
+    const wsIcon   = tickAge == null ? '❓' : tickAge > 30 ? '🔴' : tickAge > 10 ? '🟡' : '🟢';
+    const wsLine   = `${wsIcon} WS: ${tickAge != null ? tickAge + 's ago' : 'no data'}`;
+
+    // ── Market counts ─────────────────────────────────────────────────────────
+    const markets = this.oracleLag?.markets;
+    const m5  = markets ? [...markets.values()].filter(m => m._timeframe === '5m').length  : 0;
+    const m15 = markets ? [...markets.values()].filter(m => m._timeframe === '15m').length : 0;
+    const m4h = markets ? [...markets.values()].filter(m => m._timeframe === '4h').length  : 0;
+
+    // ── Live prices + window moves ────────────────────────────────────────────
+    const prices      = this.oracleLag?.prices      || {};
+    const windowPrices= this.oracleLag?.windowOpenPrices || new Map();
+    const SYMS = ['BTC', 'ETH', 'DOGE'];
+    const priceLines = SYMS.map(sym => {
+      const cur  = prices[sym]?.current;
+      const open = windowPrices.get(sym);
+      if (!cur) return null;
+      const pct = (open && open > 0) ? ((cur - open) / open * 100) : 0;
+      const arrow = pct > 0.5 ? '↑' : pct < -0.5 ? '↓' : '→';
+      const fmt = cur > 100 ? cur.toLocaleString('en', { maximumFractionDigits: 0 }) : cur.toFixed(4);
+      return `  ${sym}: $${fmt} ${arrow}${pct >= 0 ? '+' : ''}${pct.toFixed(2)}% (5m)`;
+    }).filter(Boolean);
+
+    // ── Recent signals from signal_log.jsonl ─────────────────────────────────
+    let signalLines = '';
+    try {
+      const file  = path.join(__dirname, 'signal_log.jsonl');
+      const lines = fs.readFileSync(file, 'utf8').trim().split('\n').filter(Boolean);
+      const recent = lines.slice(-30).map(l => { try { return JSON.parse(l); } catch { return null; } }).filter(Boolean);
+
+      // Count today's signals
+      const today = now.toISOString().slice(0, 10);
+      const todaySigs  = recent.filter(e => e.date?.startsWith(today));
+      const todayFired = todaySigs.filter(e => e.traded === true || String(e.traded).toLowerCase() === 'true');
+
+      // Last 5 meaningful signals (traded or non-CLOB_OVER/non-DISABLED)
+      const interesting = recent.filter(e =>
+        e.traded === true ||
+        String(e.traded).toLowerCase() === 'true' ||
+        !['CLOB_OVER','DISABLED','BOUNCE_BLOCK'].includes(e.blocked_by)
+      ).slice(-5);
+
+      const sigRows = interesting.map(e => {
+        const traded = e.traded === true || String(e.traded).toLowerCase() === 'true';
+        const icon   = traded ? '🔥' : '⛔';
+        const clob   = parseFloat(e.clobPrice || 0).toFixed(2);
+        const pct    = parseFloat(e.pctWindow || 0);
+        const ts     = e.date ? e.date.slice(11, 16) : '?';
+        return `${icon} ${ts} [${e.path}][${e.timeframe}] ${e.symbol} ${e.direction} clob=${clob} w=${pct >= 0 ? '+' : ''}${pct.toFixed(2)}%`;
+      });
+
+      signalLines = `\n\n<b>Signals today:</b> ${todaySigs.length} checked | ${todayFired.length} traded` +
+        (sigRows.length ? '\n' + sigRows.join('\n') : '\n  (none yet)');
+    } catch { /* no signal log */ }
+
+    // ── Next window reset ─────────────────────────────────────────────────────
+    const nowMs       = Date.now();
+    const windowMs    = 300000; // 5m
+    const nextReset   = Math.ceil(nowMs / windowMs) * windowMs;
+    const secsToReset = Math.round((nextReset - nowMs) / 1000);
+
+    return (
+      `📡 <b>Monitor</b> — ${utc}\n` +
+      `${status} | Balance: $${balance.toFixed(2)} (${pnlSign}$${pnl.toFixed(2)} today)\n` +
+      `Trades: ${dayTrades}/${maxTrades} | Markets: ${m5}×5m ${m15}×15m ${m4h}×4h\n` +
+      `${wsLine} | Next reset: ${secsToReset}s\n\n` +
+      `<b>Live prices (5m window move):</b>\n` +
+      priceLines.join('\n') +
+      signalLines
     );
   }
 
